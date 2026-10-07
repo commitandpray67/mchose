@@ -87,8 +87,7 @@
     { label: "Cycle profiles", value: 262144 }
   ];
   var MODIFIERS = { ctrl: 1, shift: 2, alt: 4, win: 8 };
-  function encodeRequest(reportId, cmd, args = []) {
-    const len = REPORT_LEN[reportId];
+  function encodeRequest(reportId, cmd, args = [], len = REPORT_LEN[reportId]) {
     if (!len) throw new Error(`unknown report id 0x${hex(reportId)}`);
     if (args.length + 1 > len) throw new Error(`command 0x${hex(cmd)} is too long for report 0x${hex(reportId)}`);
     const out = new Uint8Array(len);
@@ -99,7 +98,7 @@
   }
   function decodeReply(reportId, bytes) {
     const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const start = b[0] === reportId && b.length > REPORT_LEN[reportId] ? 1 : 0;
+    const start = b[0] === reportId ? 1 : 0;
     if (b.length <= start) return null;
     const body = b.slice(start).map((x) => x ^ 255);
     if (body.every((x) => x === 0) || body.every((x) => x === 255)) return null;
@@ -340,38 +339,77 @@
     async close() {
       if (this.device.opened) await this.device.close();
     }
+    // Byte length of a feature report as the device's descriptor declares it,
+    // falling back to the documented length.
+    reportLength(reportId) {
+      if (!this.lengths) {
+        this.lengths = {};
+        const walk = (cols) => cols.forEach((c) => {
+          if (c.usagePage === USAGE_PAGE) {
+            for (const r of c.featureReports || []) {
+              const bits = (r.items || []).reduce((n, it) => n + (it.reportSize || 0) * (it.reportCount || 0), 0);
+              if (bits >= 8) this.lengths[r.reportId] = Math.ceil(bits / 8);
+            }
+          }
+          walk(c.children || []);
+        });
+        walk(this.device.collections || []);
+      }
+      return this.lengths[reportId] || REPORT_LEN[reportId];
+    }
+    frame(reportId, cmd, args) {
+      return encodeRequest(reportId, cmd, args, this.reportLength(reportId));
+    }
     // One request/response exchange. The reply buffer is shared, so a read can
     // return the previous command's answer or a half-written buffer: keep
-    // polling until the echo matches and the same bytes arrive twice.
-    request(reportId, cmd, args = [], { timeout = 1500, validate, stable = true } = {}) {
+    // polling until the echo matches and the same bytes arrive twice. Replies
+    // that cross the RF link can be dropped, so the request is re-sent while
+    // waiting, as M HUB does.
+    request(reportId, cmd, args = [], { timeout = 2e3, validate, stable = true, resendMs = 400 } = {}) {
       return this.queue.run(async () => {
-        const frame = encodeRequest(reportId, cmd, args);
+        const frame = this.frame(reportId, cmd, args);
         this.log("tx", reportId, frame);
         await this.device.sendFeatureReport(reportId, frame);
         const deadline = Date.now() + timeout;
+        let lastSend = Date.now();
         let prev = null;
         let delay = 10;
+        let seen = "nothing";
+        const logged = /* @__PURE__ */ new Set();
         while (Date.now() < deadline) {
           await sleep(delay);
           delay = Math.min(delay * 1.5, 120);
           const raw = dataViewBytes(await this.device.receiveFeatureReport(reportId));
           const reply = decodeReply(reportId, raw);
-          if (!reply || reply.cmd !== cmd) continue;
-          if (validate && !validate(reply.payload)) continue;
-          const key = hexBytes(reply.payload);
-          if (!stable || key === prev) {
-            this.log("rx", reportId, raw);
-            return reply.payload;
+          if (reply && reply.cmd === cmd && (!validate || validate(reply.payload))) {
+            const key = hexBytes(reply.payload);
+            if (!stable || key === prev) {
+              this.log("rx", reportId, raw);
+              return reply.payload;
+            }
+            prev = key;
+            continue;
           }
-          prev = key;
+          seen = !reply ? "empty replies" : reply.cmd !== cmd ? `replies to command 0x${hex(reply.cmd)}` : "a reply that does not look valid";
+          const rawKey = hexBytes(raw);
+          if (!logged.has(rawKey)) {
+            logged.add(rawKey);
+            this.log("rx-ignored", reportId, raw);
+          }
+          if (Date.now() - lastSend >= resendMs) {
+            await this.device.sendFeatureReport(reportId, frame);
+            lastSend = Date.now();
+          }
         }
-        throw new Error(`no reply to command 0x${hex(cmd)} (is the mouse awake and connected?)`);
+        const err = new Error(`no reply to command 0x${hex(cmd)}: got ${seen}`);
+        err.seen = seen;
+        throw err;
       });
     }
     // Fire-and-forget write: the write commands have no reply of their own.
     send(reportId, cmd, args = []) {
       return this.queue.run(async () => {
-        const frame = encodeRequest(reportId, cmd, args);
+        const frame = this.frame(reportId, cmd, args);
         this.log("tx", reportId, frame);
         await this.device.sendFeatureReport(reportId, frame);
       });
@@ -382,7 +420,7 @@
     async readFirmware() {
       return parseFirmware(await this.request(SHORT, CMD.firmware));
     }
-    async readConfig({ timeout = 2500 } = {}) {
+    async readConfig({ timeout = 3e3 } = {}) {
       const p = await this.request(LONG, CMD.configRead, [], { timeout, validate: isPlausibleConfig });
       this.config = parseConfig(p);
       return this.config;
@@ -411,7 +449,20 @@
       } catch {
       }
       this.info = { status, firmware, ...identify(this.device.productId, status.pid) };
-      await this.readConfig();
+      try {
+        await this.readConfig();
+      } catch (e) {
+        await this.send(SHORT, CMD.profile, [0]);
+        await sleep(800);
+        try {
+          await this.readConfig({ timeout: 4e3 });
+          this.recovered = true;
+        } catch {
+          throw new Error(
+            `The mouse answered but would not send its settings (${e.seen || e.message}). Wake it by moving it, close M HUB and any other tab using it, then click Connect again. If it still fails, tick "Record traffic", try again and send the log.`
+          );
+        }
+      }
       return { info: this.info, config: this.config };
     }
     // Polls the config until check(config) is true. Writes take anywhere from
@@ -508,7 +559,11 @@
     { name: "Ace 68 Turbo", ids: [[14391, 12326], [14391, 12327], [14391, 12328], [14391, 12329]] },
     { name: "Ace 68 GT", ids: [[14391, 12295], [14391, 12297]] }
   ];
-  var HID_FILTERS2 = MODELS2.flatMap((m) => m.ids.map(([vendorId, productId]) => ({ vendorId, productId })));
+  var VENDOR_IDS2 = [14391, 16868, 21075];
+  var HID_FILTERS2 = [
+    ...MODELS2.flatMap((m) => m.ids.map(([vendorId, productId]) => ({ vendorId, productId }))),
+    ...VENDOR_IDS2.map((vendorId) => ({ vendorId }))
+  ];
   function modelFor(device) {
     return MODELS2.find((m) => m.ids.some(([v, p]) => v === device.vendorId && p === device.productId)) || null;
   }
@@ -665,6 +720,7 @@
     $("#no-hid").hidden = false;
     $("#connect-mouse").disabled = true;
     $("#connect-keyboard").disabled = true;
+    $("#connect-any").disabled = true;
   }
   async function connectMouse(device) {
     if (!isA7V2(device)) {
@@ -677,7 +733,7 @@
       await mouse.load();
       await loadProfileNames();
       $("#mouse").hidden = false;
-      toast(`Connected to ${mouse.info.name}`, "ok");
+      toast(mouse.recovered ? `Connected to ${mouse.info.name} (switched to profile 1 to wake its settings channel)` : `Connected to ${mouse.info.name}`, "ok");
     });
     if (!mouse.config) $("#mouse").hidden = true;
   }
@@ -704,11 +760,13 @@
     renderKeyboard(device);
     $("#keyboard").hidden = false;
   }
-  $("#connect-keyboard").onclick = async () => {
-    const devices = await navigator.hid.requestDevice({ filters: HID_FILTERS2 }).catch(() => []);
+  async function pickKeyboard(filters) {
+    const devices = await navigator.hid.requestDevice({ filters }).catch(() => []);
     const device = devices.find(isVendorCollection) || devices[0];
     if (device) await connectKeyboard(device);
-  };
+  }
+  $("#connect-keyboard").onclick = () => pickKeyboard(HID_FILTERS2);
+  $("#connect-any").onclick = () => pickKeyboard([]);
   $("#keyboard-disconnect").onclick = async () => {
     await keyboard?.close();
     keyboard = null;

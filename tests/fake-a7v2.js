@@ -31,7 +31,9 @@ export function defaultConfig(profile = 0) {
 }
 
 export class FakeA7V2 {
-  constructor({ productId = 0x100b, mousePid = 0x4021 } = {}) {
+  constructor({ productId = 0x100b, mousePid = 0x4021, dropConfigReads = 0, wedged = false } = {}) {
+    this.dropConfigReads = dropConfigReads; // ignore this many 0x67 requests
+    this.wedged = wedged; // 0x67 answers zeros until a profile is selected
     this.vendorId = 0x3837;
     this.productId = productId;
     this.productName = 'MCHOSE A7 V2 Ultra+';
@@ -88,7 +90,11 @@ export class FakeA7V2 {
       case '17:4':
         return this.reply(rid, cmd, [8, ...Array.from('5.46.2.4', (ch) => ch.charCodeAt(0))]);
       case '18:103':
-        return this.reply(rid, cmd, c);
+        if (this.dropConfigReads > 0) {
+          this.dropConfigReads--;
+          return;
+        }
+        return this.reply(rid, cmd, this.wedged ? new Uint8Array(63) : c);
       case '18:104': {
         const name = Array.from(`Config ${a[0] + 1}`, (ch) => ch.charCodeAt(0));
         return this.reply(rid, cmd, [a[0], ...name, 0]);
@@ -126,6 +132,7 @@ export class FakeA7V2 {
       }
       case '17:88':
         this.active = a[0];
+        this.wedged = false;
         return;
       default:
         throw new Error(`fake: unknown command ${rid}:${cmd}`);

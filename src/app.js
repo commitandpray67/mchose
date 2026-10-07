@@ -70,6 +70,7 @@ if (!hidAvailable()) {
   $('#no-hid').hidden = false;
   $('#connect-mouse').disabled = true;
   $('#connect-keyboard').disabled = true;
+  $('#connect-any').disabled = true;
 }
 
 async function connectMouse(device) {
@@ -83,7 +84,7 @@ async function connectMouse(device) {
     await mouse.load();
     await loadProfileNames();
     $('#mouse').hidden = false;
-    toast(`Connected to ${mouse.info.name}`, 'ok');
+    toast(mouse.recovered ? `Connected to ${mouse.info.name} (switched to profile 1 to wake its settings channel)` : `Connected to ${mouse.info.name}`, 'ok');
   });
   if (!mouse.config) $('#mouse').hidden = true;
 }
@@ -114,12 +115,17 @@ async function connectKeyboard(device) {
   $('#keyboard').hidden = false;
 }
 
-$('#connect-keyboard').onclick = async () => {
-  const devices = await navigator.hid.requestDevice({ filters: Ace.HID_FILTERS }).catch(() => []);
+async function pickKeyboard(filters) {
+  const devices = await navigator.hid.requestDevice({ filters }).catch(() => []);
   // A keyboard exposes several interfaces; the vendor-defined one carries configuration.
   const device = devices.find(Ace.isVendorCollection) || devices[0];
   if (device) await connectKeyboard(device);
-};
+}
+
+$('#connect-keyboard').onclick = () => pickKeyboard(Ace.HID_FILTERS);
+// For a keyboard whose USB ids are not MCHOSE's: lists every HID device
+// Chrome allows (it hides the plain typing interface of every keyboard).
+$('#connect-any').onclick = () => pickKeyboard([]);
 
 $('#keyboard-disconnect').onclick = async () => {
   await keyboard?.close();

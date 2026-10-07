@@ -146,3 +146,38 @@ test('bluetooth refuses rates above 1000 Hz', async () => {
   await m.load();
   assert.throws(() => m.setPollingRate(3), /not available/);
 });
+
+test('a dropped config request is re-sent', async () => {
+  const dev = new FakeA7V2({ dropConfigReads: 3 });
+  const m = new A7V2(dev, { queue: fastQueue() });
+  await m.load();
+  assert.equal(m.config.dpi[0], 1600);
+  assert.ok(dev.sent.filter((s) => s.cmd === P.CMD.configRead).length >= 4);
+});
+
+test('a wedged config channel is recovered by re-selecting a profile', async () => {
+  const dev = new FakeA7V2({ wedged: true });
+  const m = new A7V2(dev, { queue: fastQueue() });
+  await m.load();
+  assert.equal(m.recovered, true);
+  assert.equal(m.config.dpi[0], 1600);
+});
+
+test('report lengths come from the descriptor when it declares them', async () => {
+  const dev = new FakeA7V2();
+  dev.collections[1].featureReports = [
+    { reportId: 0x11, items: [{ reportSize: 8, reportCount: 20 }] },
+    { reportId: 0x12, items: [{ reportSize: 8, reportCount: 64 }] },
+  ];
+  const m = new A7V2(dev, { queue: fastQueue() });
+  assert.equal(m.reportLength(0x11), 20);
+  assert.equal(m.reportLength(0x12), 64);
+  await m.load();
+  assert.equal(m.config.profile, 0);
+});
+
+test('a reply without the leading report id still decodes', () => {
+  const r = P.decodeReply(0x12, [0x67 ^ 0xff, 0x01 ^ 0xff, ...new Array(62).fill(0xff)]);
+  assert.equal(r.cmd, 0x67);
+  assert.equal(r.payload[0], 1);
+});

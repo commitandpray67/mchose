@@ -121,8 +121,9 @@ export const MODIFIERS = { ctrl: 0x01, shift: 0x02, alt: 0x04, win: 0x08 };
 
 // Payload for sendFeatureReport(reportId, payload): command and arguments,
 // zero-padded to the report's length, every byte inverted.
-export function encodeRequest(reportId, cmd, args = []) {
-  const len = REPORT_LEN[reportId];
+// `len` overrides the default length, e.g. with the size the device's own
+// report descriptor declares.
+export function encodeRequest(reportId, cmd, args = [], len = REPORT_LEN[reportId]) {
   if (!len) throw new Error(`unknown report id 0x${hex(reportId)}`);
   if (args.length + 1 > len) throw new Error(`command 0x${hex(cmd)} is too long for report 0x${hex(reportId)}`);
   const out = new Uint8Array(len);
@@ -138,7 +139,9 @@ export function encodeRequest(reportId, cmd, args = []) {
 // buffer is empty or not a reply to anything.
 export function decodeReply(reportId, bytes) {
   const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const start = b[0] === reportId && b.length > REPORT_LEN[reportId] ? 1 : 0;
+  // A body can only start with the report id if the command were 0xed/0xee,
+  // which do not exist, so a leading report id is unambiguous.
+  const start = b[0] === reportId ? 1 : 0;
   if (b.length <= start) return null;
   const body = b.slice(start).map((x) => x ^ 0xff);
   if (body.every((x) => x === 0) || body.every((x) => x === 0xff)) return null;

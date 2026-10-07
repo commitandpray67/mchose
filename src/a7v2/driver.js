@@ -30,39 +30,82 @@ export class A7V2 {
     if (this.device.opened) await this.device.close();
   }
 
+  // Byte length of a feature report as the device's descriptor declares it,
+  // falling back to the documented length.
+  reportLength(reportId) {
+    if (!this.lengths) {
+      this.lengths = {};
+      const walk = (cols) =>
+        cols.forEach((c) => {
+          if (c.usagePage === P.USAGE_PAGE) {
+            for (const r of c.featureReports || []) {
+              const bits = (r.items || []).reduce((n, it) => n + (it.reportSize || 0) * (it.reportCount || 0), 0);
+              if (bits >= 8) this.lengths[r.reportId] = Math.ceil(bits / 8);
+            }
+          }
+          walk(c.children || []);
+        });
+      walk(this.device.collections || []);
+    }
+    return this.lengths[reportId] || P.REPORT_LEN[reportId];
+  }
+
+  frame(reportId, cmd, args) {
+    return P.encodeRequest(reportId, cmd, args, this.reportLength(reportId));
+  }
+
   // One request/response exchange. The reply buffer is shared, so a read can
   // return the previous command's answer or a half-written buffer: keep
-  // polling until the echo matches and the same bytes arrive twice.
-  request(reportId, cmd, args = [], { timeout = 1500, validate, stable = true } = {}) {
+  // polling until the echo matches and the same bytes arrive twice. Replies
+  // that cross the RF link can be dropped, so the request is re-sent while
+  // waiting, as M HUB does.
+  request(reportId, cmd, args = [], { timeout = 2000, validate, stable = true, resendMs = 400 } = {}) {
     return this.queue.run(async () => {
-      const frame = P.encodeRequest(reportId, cmd, args);
+      const frame = this.frame(reportId, cmd, args);
       this.log('tx', reportId, frame);
       await this.device.sendFeatureReport(reportId, frame);
       const deadline = Date.now() + timeout;
+      let lastSend = Date.now();
       let prev = null;
       let delay = 10;
+      let seen = 'nothing';
+      const logged = new Set();
       while (Date.now() < deadline) {
         await sleep(delay);
         delay = Math.min(delay * 1.5, 120);
         const raw = dataViewBytes(await this.device.receiveFeatureReport(reportId));
         const reply = P.decodeReply(reportId, raw);
-        if (!reply || reply.cmd !== cmd) continue;
-        if (validate && !validate(reply.payload)) continue;
-        const key = P.hexBytes(reply.payload);
-        if (!stable || key === prev) {
-          this.log('rx', reportId, raw);
-          return reply.payload;
+        if (reply && reply.cmd === cmd && (!validate || validate(reply.payload))) {
+          const key = P.hexBytes(reply.payload);
+          if (!stable || key === prev) {
+            this.log('rx', reportId, raw);
+            return reply.payload;
+          }
+          prev = key;
+          continue;
         }
-        prev = key;
+        // Keep what we saw for the error message and the log.
+        seen = !reply ? 'empty replies' : reply.cmd !== cmd ? `replies to command 0x${P.hex(reply.cmd)}` : 'a reply that does not look valid';
+        const rawKey = P.hexBytes(raw);
+        if (!logged.has(rawKey)) {
+          logged.add(rawKey);
+          this.log('rx-ignored', reportId, raw);
+        }
+        if (Date.now() - lastSend >= resendMs) {
+          await this.device.sendFeatureReport(reportId, frame);
+          lastSend = Date.now();
+        }
       }
-      throw new Error(`no reply to command 0x${P.hex(cmd)} (is the mouse awake and connected?)`);
+      const err = new Error(`no reply to command 0x${P.hex(cmd)}: got ${seen}`);
+      err.seen = seen;
+      throw err;
     });
   }
 
   // Fire-and-forget write: the write commands have no reply of their own.
   send(reportId, cmd, args = []) {
     return this.queue.run(async () => {
-      const frame = P.encodeRequest(reportId, cmd, args);
+      const frame = this.frame(reportId, cmd, args);
       this.log('tx', reportId, frame);
       await this.device.sendFeatureReport(reportId, frame);
     });
@@ -76,7 +119,7 @@ export class A7V2 {
     return P.parseFirmware(await this.request(P.SHORT, P.CMD.firmware));
   }
 
-  async readConfig({ timeout = 2500 } = {}) {
+  async readConfig({ timeout = 3000 } = {}) {
     const p = await this.request(P.LONG, P.CMD.configRead, [], { timeout, validate: P.isPlausibleConfig });
     this.config = P.parseConfig(p);
     return this.config;
@@ -109,7 +152,25 @@ export class A7V2 {
       /* optional */
     }
     this.info = { status, firmware, ...P.identify(this.device.productId, status.pid) };
-    await this.readConfig();
+    try {
+      await this.readConfig();
+    } catch (e) {
+      // The long-report channel can wedge and answer zeros while the short
+      // commands keep working. Re-selecting a profile brings it back; the
+      // active profile is unknown at this point, so this selects profile 1.
+      await this.send(P.SHORT, P.CMD.profile, [0]);
+      await sleep(800);
+      try {
+        await this.readConfig({ timeout: 4000 });
+        this.recovered = true;
+      } catch {
+        throw new Error(
+          `The mouse answered but would not send its settings (${e.seen || e.message}). ` +
+            'Wake it by moving it, close M HUB and any other tab using it, then click Connect again. ' +
+            'If it still fails, tick "Record traffic", try again and send the log.',
+        );
+      }
+    }
     return { info: this.info, config: this.config };
   }
 

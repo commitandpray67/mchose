@@ -17,7 +17,13 @@ export const MODELS = [
   { name: 'Ace 68 GT', ids: [[0x3837, 0x3007], [0x3837, 0x3009]] },
 ];
 
-export const HID_FILTERS = MODELS.flatMap((m) => m.ids.map(([vendorId, productId]) => ({ vendorId, productId })));
+// Every MCHOSE vendor id, so a variant with a product id missing from the
+// table above still shows up in the picker.
+export const VENDOR_IDS = [0x3837, 0x41e4, 0x5253];
+export const HID_FILTERS = [
+  ...MODELS.flatMap((m) => m.ids.map(([vendorId, productId]) => ({ vendorId, productId }))),
+  ...VENDOR_IDS.map((vendorId) => ({ vendorId })),
+];
 
 export function modelFor(device) {
   return MODELS.find((m) => m.ids.some(([v, p]) => v === device.vendorId && p === device.productId)) || null;
