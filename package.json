@@ -5,6 +5,7 @@
   "description": "Browser configurator for the MCHOSE A7 V2 mouse and Ace 68 keyboard, over WebHID.",
   "type": "module",
   "scripts": {
+    "build": "npx --yes esbuild@0.24.0 src/app.js --bundle --format=iife --target=chrome100 --legal-comments=none --outfile=app.bundle.js",
     "start": "npx --yes http-server -c-1 -p 8080 .",
     "test": "node --test"
   }

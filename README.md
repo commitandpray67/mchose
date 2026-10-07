@@ -44,16 +44,16 @@ keyboard settings to this app.
 
 ## Running it
 
-WebHID only works in **Chrome, Edge, Opera or another Chromium browser**, and only on a page served over `https://` or
-from `localhost`. Opening `index.html` as a file won't work.
+Use **Chrome, Edge, Opera or another Chromium browser**. Firefox and Safari don't support WebHID.
+
+**Easiest:** double-click `index.html`. Then click **Connect A7 V2** or **Connect Ace 68** and pick the device.
+
+Or serve it locally:
 
 ```sh
 npm start              # serves on http://localhost:8080
 # or: python3 -m http.server 8080
 ```
-
-Then open http://localhost:8080, click **Connect A7 V2** or **Connect Ace 68**, and pick the device. Chrome
-remembers the device, so next time the page reconnects to it on its own.
 
 **Hosting it:** `.github/workflows/pages.yml` runs the tests and publishes the site to GitHub Pages on every push to
 `main`. To turn it on, go to the repository's Settings → Pages and set Source to "GitHub Actions".
@@ -69,10 +69,16 @@ sudo udevadm control --reload && sudo udevadm trigger
 
 ## Development
 
-No build step: plain ES modules.
+The source is plain ES modules in `src/`. The page loads `app.bundle.js`, one classic script built from them, because
+Chrome won't load module scripts on a page opened from disk. After editing anything in `src/`, rebuild it:
+
+```sh
+npm run build
+```
 
 ```
 index.html, styles.css    the page
+app.bundle.js             built from src/ by `npm run build` (committed)
 src/app.js                UI
 src/a7v2/protocol.js      A7 V2 frame and config encoding/decoding (pure, unit tested)
 src/a7v2/driver.js        A7 V2 request sequencing, retries and read-back checks
