@@ -1,0 +1,11 @@
+{
+  "name": "mchose-configurator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser configurator for the MCHOSE A7 V2 mouse and Ace 68 keyboard, over WebHID.",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes http-server -c-1 -p 8080 .",
+    "test": "node --test"
+  }
+}

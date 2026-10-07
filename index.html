@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCHOSE Configurator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>MCHOSE Configurator</h1>
+    <p class="sub">Configure an A7 V2 mouse and talk to an Ace 68 keyboard from your browser, without the M HUB site.</p>
+    <div class="actions">
+      <button id="connect-mouse" class="primary">Connect A7 V2</button>
+      <button id="connect-keyboard" class="primary">Connect Ace 68</button>
+    </div>
+    <p id="no-hid" class="warn" hidden>
+      This browser has no WebHID. Use Chrome, Edge, Opera or another Chromium browser, and open the page over
+      <code>https://</code> or <code>http://localhost</code>.
+    </p>
+  </header>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <main>
+    <section id="mouse" class="panel" hidden>
+      <div class="panel-head">
+        <h2 id="mouse-title">A7 V2</h2>
+        <button id="mouse-refresh">Reload from mouse</button>
+        <button id="mouse-disconnect">Disconnect</button>
+      </div>
+      <dl id="mouse-info" class="info"></dl>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Profile</h3>
+          <div id="profiles" class="seg"></div>
+          <p class="hint">Each onboard profile has its own DPI stages, polling rate and buttons.</p>
+        </div>
+
+        <div class="card">
+          <h3>Polling rate</h3>
+          <div id="rates" class="seg"></div>
+          <p class="hint" id="rate-hint"></p>
+        </div>
+
+        <div class="card wide">
+          <h3>DPI stages</h3>
+          <div id="dpi-stages" class="stages"></div>
+          <div class="row">
+            <label>Stages in cycle
+              <select id="stage-count"></select>
+            </label>
+            <button id="dpi-save" class="primary">Save DPI</button>
+          </div>
+          <p class="hint">Click a stage's dot to make it the active stage.</p>
+        </div>
+
+        <div class="card">
+          <h3>Sensor</h3>
+          <label>Lift-off distance <select id="lod"></select></label>
+          <label class="check"><input type="checkbox" id="motion-sync"> Motion Sync</label>
+          <label class="check"><input type="checkbox" id="ripple"> Ripple control</label>
+          <label class="check"><input type="checkbox" id="angle-snap"> Angle snapping</label>
+          <label>Angle tuning <output id="angle-out"></output>
+            <input type="range" id="angle" min="-30" max="30" step="1">
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>Performance mode</h3>
+          <div id="perf" class="seg"></div>
+          <p class="hint">Higher modes trade battery life for responsiveness.</p>
+        </div>
+
+        <div class="card">
+          <h3>Timing</h3>
+          <label>Debounce (ms) <input type="number" id="debounce" min="0" max="20" step="1"></label>
+          <label>Auto-sleep (minutes, 0 = off) <input type="number" id="sleep" min="0" max="255" step="1"></label>
+          <button id="timing-save" class="primary">Save timing</button>
+        </div>
+
+        <div class="card wide">
+          <h3>Buttons</h3>
+          <table id="buttons" class="buttons"><tbody></tbody></table>
+          <p class="hint">Left click is button 1: if you remap it, keep another button on "Left click" so you can still click.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="keyboard" class="panel" hidden>
+      <div class="panel-head">
+        <h2 id="keyboard-title">Ace 68</h2>
+        <button id="keyboard-disconnect">Disconnect</button>
+      </div>
+      <div class="notice">
+        <strong>Settings for the Ace 68 aren't supported yet.</strong> MCHOSE hasn't published how the Ace 68 is configured, and nobody has
+        documented it yet. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
+        It identifies the keyboard, shows its HID interfaces and every report it sends, and lets you record what the
+        official site does (see <a href="#capture">Capture the protocol</a>). One recording gives enough to add
+        actuation, rapid trigger, lighting and remapping here.
+      </div>
+      <dl id="keyboard-info" class="info"></dl>
+      <h3>HID collections</h3>
+      <table id="collections" class="mono"><thead><tr><th>Usage page</th><th>Usage</th><th>Input</th><th>Output</th><th>Feature</th></tr></thead><tbody></tbody></table>
+
+      <details class="card">
+        <summary>Send a report by hand (advanced)</summary>
+        <p class="hint">Only send bytes you have seen the official driver send. Hex, space separated, without the report id.</p>
+        <div class="row">
+          <label>Report id <input id="raw-id" value="0x00" size="5"></label>
+          <label class="grow">Bytes <input id="raw-bytes" placeholder="aa 07 00 ..."></label>
+        </div>
+        <div class="row">
+          <button id="raw-output">Send output report</button>
+          <button id="raw-feature">Send feature report</button>
+          <button id="raw-read">Read feature report</button>
+        </div>
+      </details>
+    </section>
+
+    <section id="log-panel" class="panel">
+      <div class="panel-head">
+        <h2>HID log</h2>
+        <label class="check"><input type="checkbox" id="log-enabled"> Record traffic</label>
+        <button id="log-clear">Clear</button>
+        <button id="log-save">Save as JSON</button>
+      </div>
+      <pre id="log" class="log"></pre>
+    </section>
+
+    <section id="capture" class="panel">
+      <h2>Capture the protocol from the official site</h2>
+      <ol>
+        <li>Open the official MCHOSE M HUB web driver in Chrome or Edge. Don't connect the keyboard yet. If it connects on its own, unplug and replug the keyboard after step 3.</li>
+        <li>Press F12, open the Console, paste the contents of <a href="tools/capture-mhub.js" target="_blank">tools/capture-mhub.js</a> and press Enter.</li>
+        <li>Connect the keyboard in M HUB. Before each change, run <code>mchoseCapture.mark('what you are about to change')</code>, then make that one change.</li>
+        <li>Run <code>mchoseCapture.download()</code> and add the JSON file to this repository under <code>captures/</code>.</li>
+      </ol>
+      <p class="hint">The script only records the traffic and passes every call through unchanged.</p>
+    </section>
+  </main>
+
+  <footer>
+    Unofficial and not affiliated with MCHOSE. Changes are written to the device's onboard memory.
+  </footer>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
