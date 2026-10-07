@@ -122,14 +122,14 @@
     const n = Math.min(p[0], p.length - 1);
     return String.fromCharCode(...p.slice(1, 1 + n)).replace(/\0.*$/, "").trim();
   }
+  var utf8 = (bytes) => new TextDecoder("utf-8").decode(Uint8Array.from(bytes)).replace(/\0.*$/s, "").trim();
   function parseProfileName(p) {
     const end = p.indexOf(0, 1);
-    const raw = p.slice(1, end < 0 ? p.length : end);
-    return String.fromCharCode(...raw).trim();
+    return utf8(p.slice(1, end < 0 ? p.length : end));
   }
   function parseButtonName(p) {
     const n = Math.min(p[1], p.length - 2);
-    return String.fromCharCode(...p.slice(2, 2 + n)).replace(/\0.*$/, "").trim();
+    return utf8(p.slice(2, 2 + n));
   }
   var CONFIG_LEN = 63;
   var OFF = {
@@ -557,9 +557,12 @@
     { name: "Ace 68", ids: [[16868, 8468], [16868, 8469], [16868, 8470], [16868, 8471], [14391, 12291], [14391, 12330]] },
     { name: "Ace 68 V2", ids: [[14391, 12324], [14391, 12325]] },
     { name: "Ace 68 Turbo", ids: [[14391, 12326], [14391, 12327], [14391, 12328], [14391, 12329]] },
-    { name: "Ace 68 GT", ids: [[14391, 12295], [14391, 12297]] }
+    { name: "Ace 68 GT", ids: [[14391, 12295], [14391, 12297]] },
+    { name: "Ace 60", ids: [[16868, 8449], [16868, 8450], [6645, 64560], [6645, 65307]] },
+    { name: "Ace 60 Pro", ids: [[16868, 8451], [16868, 8452], [6645, 64561], [6645, 65295]] },
+    { name: "Ace 60X", ids: [[16868, 8486], [16868, 8487], [16868, 8466], [16868, 8467]] }
   ];
-  var VENDOR_IDS2 = [14391, 16868, 21075];
+  var VENDOR_IDS2 = [14391, 16868, 21075, 6645];
   var HID_FILTERS2 = [
     ...MODELS2.flatMap((m) => m.ids.map(([vendorId, productId]) => ({ vendorId, productId }))),
     ...VENDOR_IDS2.map((vendorId) => ({ vendorId }))
@@ -572,30 +575,44 @@
     return (device.collections || []).some((c) => c.usagePage >= 65280);
   }
   var RawSession = class {
-    constructor(device, { onReport = () => {
+    constructor(devices, { onReport = () => {
     } } = {}) {
-      this.device = device;
+      this.devices = [].concat(devices);
+      this.device = this.devices[0];
       this.onReport = onReport;
-      this.handler = (e) => this.onReport({ dir: "in", reportId: e.reportId, bytes: dataViewBytes(e.data) });
+      this.handlers = /* @__PURE__ */ new Map();
     }
     async open() {
-      if (!this.device.opened) await this.device.open();
-      this.device.addEventListener("inputreport", this.handler);
+      for (const d of this.devices) {
+        if (!d.opened) await d.open();
+        const h = (e) => this.onReport({ dir: "in", reportId: e.reportId, bytes: dataViewBytes(e.data) });
+        d.addEventListener("inputreport", h);
+        this.handlers.set(d, h);
+      }
     }
     async close() {
-      this.device.removeEventListener("inputreport", this.handler);
-      if (this.device.opened) await this.device.close();
+      for (const d of this.devices) {
+        d.removeEventListener("inputreport", this.handlers.get(d));
+        if (d.opened) await d.close();
+      }
+    }
+    owns(device) {
+      return this.devices.includes(device);
+    }
+    target(kind, reportId) {
+      const has = (c) => (c[kind] || []).some((r) => r.reportId === reportId) || (c.children || []).some(has);
+      return this.devices.find((d) => (d.collections || []).some(has)) || this.devices.find(isVendorCollection) || this.device;
     }
     async sendOutput(reportId, bytes) {
-      await this.device.sendReport(reportId, Uint8Array.from(bytes));
+      await this.target("outputReports", reportId).sendReport(reportId, Uint8Array.from(bytes));
       this.onReport({ dir: "out", reportId, bytes: Uint8Array.from(bytes) });
     }
     async sendFeature(reportId, bytes) {
-      await this.device.sendFeatureReport(reportId, Uint8Array.from(bytes));
+      await this.target("featureReports", reportId).sendFeatureReport(reportId, Uint8Array.from(bytes));
       this.onReport({ dir: "feature-out", reportId, bytes: Uint8Array.from(bytes) });
     }
     async readFeature(reportId) {
-      const bytes = dataViewBytes(await this.device.receiveFeatureReport(reportId));
+      const bytes = dataViewBytes(await this.target("featureReports", reportId).receiveFeatureReport(reportId));
       this.onReport({ dir: "feature-in", reportId, bytes });
       return bytes;
     }
@@ -661,6 +678,85 @@
     ["F24", 115]
   ].map(([label, usage]) => ({ label, usage }));
   var keyLabel = (usage) => KEYS.find((k) => k.usage === usage)?.label ?? `0x${usage.toString(16)}`;
+
+  // src/capture.js
+  function installCapture() {
+    if (window.mchoseCapture) {
+      console.warn("mchoseCapture is already installed");
+      return;
+    }
+    const log = [];
+    const t0 = performance.now();
+    const hex2 = (buf) => {
+      const b = ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : new Uint8Array(buf);
+      return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(" ");
+    };
+    const id = (d) => `${d.vendorId.toString(16).padStart(4, "0")}:${d.productId.toString(16).padStart(4, "0")}`;
+    const push = (e) => log.push({ t: Math.round(performance.now() - t0), ...e });
+    const describe2 = (d) => ({
+      dev: id(d),
+      name: d.productName,
+      collections: d.collections.map((c) => ({
+        usagePage: c.usagePage,
+        usage: c.usage,
+        input: c.inputReports.map((x) => x.reportId),
+        output: c.outputReports.map((x) => x.reportId),
+        feature: c.featureReports.map((x) => x.reportId)
+      }))
+    });
+    const watched = /* @__PURE__ */ new WeakSet();
+    const watch = (d) => {
+      if (watched.has(d)) return;
+      watched.add(d);
+      push({ dir: "device", ...describe2(d) });
+      d.addEventListener("inputreport", (e) => push({ dev: id(d), dir: "in", reportId: e.reportId, data: hex2(e.data) }));
+    };
+    const proto = HIDDevice.prototype;
+    const wrap = (name, fn) => {
+      const orig = proto[name];
+      proto[name] = function(...args) {
+        return fn.call(this, orig, ...args);
+      };
+    };
+    wrap("sendReport", function(orig, reportId, data) {
+      watch(this);
+      push({ dev: id(this), dir: "out", reportId, data: hex2(data) });
+      return orig.call(this, reportId, data);
+    });
+    wrap("sendFeatureReport", function(orig, reportId, data) {
+      watch(this);
+      push({ dev: id(this), dir: "feature-out", reportId, data: hex2(data) });
+      return orig.call(this, reportId, data);
+    });
+    wrap("receiveFeatureReport", async function(orig, reportId) {
+      const dv = await orig.call(this, reportId);
+      push({ dev: id(this), dir: "feature-in", reportId, data: hex2(dv) });
+      return dv;
+    });
+    wrap("open", async function(orig) {
+      const r = await orig.call(this);
+      watch(this);
+      return r;
+    });
+    navigator.hid.getDevices().then((list) => list.filter((d) => d.opened).forEach(watch));
+    window.mchoseCapture = {
+      log,
+      mark(note) {
+        push({ dir: "mark", note: String(note) });
+        console.log(`marked: ${note}`);
+      },
+      download() {
+        const body = JSON.stringify({ userAgent: navigator.userAgent, page: location.href, log }, null, 1);
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([body], { type: "application/json" }));
+        a.download = `mchose-capture-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.json`;
+        a.click();
+        console.log(`saved ${log.length} entries`);
+      }
+    };
+    console.log('mchoseCapture installed. Now use M HUB as usual; run mchoseCapture.mark("...") before each change.');
+  }
+  var captureSnippet = () => `(${installCapture.toString()})();`;
 
   // src/app.js
   var $ = (sel) => document.querySelector(sel);
@@ -748,22 +844,31 @@
     mouse = null;
     $("#mouse").hidden = true;
   };
-  async function connectKeyboard(device) {
-    keyboard?.close();
-    keyboard = new RawSession(device, { onReport: ({ dir, reportId, bytes }) => logEntry(dir, reportId, bytes) });
+  async function connectKeyboard(devices) {
+    await keyboard?.close().catch(() => {
+    });
+    keyboard = new RawSession(devices, { onReport: ({ dir, reportId, bytes }) => logEntry(dir, reportId, bytes) });
     try {
       await keyboard.open();
     } catch (e) {
       toast(`Could not open the keyboard: ${e.message}`, "err");
       return;
     }
-    renderKeyboard(device);
+    renderKeyboard(keyboard.devices);
     $("#keyboard").hidden = false;
   }
+  async function siblings(devices) {
+    const [first] = devices;
+    const granted = await navigator.hid.getDevices();
+    const same = granted.filter((d) => d.vendorId === first.vendorId && d.productId === first.productId);
+    return [.../* @__PURE__ */ new Set([...devices, ...same])];
+  }
   async function pickKeyboard(filters) {
-    const devices = await navigator.hid.requestDevice({ filters }).catch(() => []);
-    const device = devices.find(isVendorCollection) || devices[0];
-    if (device) await connectKeyboard(device);
+    const picked = await navigator.hid.requestDevice({ filters }).catch(() => []);
+    if (!picked.length) return;
+    const all = await siblings(picked);
+    all.sort((a, b) => Number(isVendorCollection(b)) - Number(isVendorCollection(a)));
+    await connectKeyboard(all);
   }
   $("#connect-keyboard").onclick = () => pickKeyboard(HID_FILTERS2);
   $("#connect-any").onclick = () => pickKeyboard([]);
@@ -778,7 +883,7 @@
       $("#mouse").hidden = true;
       toast("Mouse disconnected");
     }
-    if (keyboard && e.device === keyboard.device) {
+    if (keyboard && keyboard.owns(e.device)) {
       keyboard = null;
       $("#keyboard").hidden = true;
       toast("Keyboard disconnected");
@@ -787,7 +892,10 @@
   var profileNames = [];
   async function loadProfileNames() {
     profileNames = [];
-    for (let i = 0; i < PROFILE_COUNT; i++) profileNames.push(await mouse.readProfileName(i) || `Profile ${i + 1}`);
+    for (let i = 0; i < PROFILE_COUNT; i++) {
+      const name = await mouse.readProfileName(i);
+      profileNames.push(!name || /[\u3000-\u9fff]/.test(name) ? `Profile ${i + 1}` : name);
+    }
   }
   function segmented(container, items, current, onPick) {
     container.replaceChildren(
@@ -986,18 +1094,19 @@
       })
     );
   }
-  function renderKeyboard(device) {
+  function renderKeyboard(devices) {
+    const device = devices[0];
     const model = modelFor(device);
     $("#keyboard-title").textContent = `MCHOSE ${model?.name ?? device.productName}`;
     const facts = [
-      ["Model", model?.name ?? "unknown"],
+      ["Model", model?.name ?? "not in the list"],
       ["Product name", device.productName || "\u2014"],
       ["USB id", `${hex(device.vendorId, 4)}:${hex(device.productId, 4)}`],
-      ["Interface", isVendorCollection(device) ? "vendor (configuration)" : "standard HID"]
+      ["Interfaces", `${devices.length}${devices.some(isVendorCollection) ? ", incl. vendor (configuration)" : ", no vendor interface"}`]
     ];
     $("#keyboard-info").replaceChildren(...facts.map(([k, v]) => el("div", {}, el("dt", { textContent: k }), el("dd", { textContent: v }))));
     $("#collections tbody").replaceChildren(
-      ...collectionsSummary(device).map((c) => el(
+      ...devices.flatMap((d) => collectionsSummary(d)).map((c) => el(
         "tr",
         {},
         el("td", { textContent: `${"  ".repeat(c.depth)}0x${hex(c.usagePage, 4)}` }),
@@ -1021,12 +1130,24 @@
   $("#raw-output").onclick = () => rawGuard(() => keyboard.sendOutput(...rawArgs()));
   $("#raw-feature").onclick = () => rawGuard(() => keyboard.sendFeature(...rawArgs()));
   $("#raw-read").onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0]));
+  $("#capture-text").value = captureSnippet();
+  $("#copy-capture").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(captureSnippet());
+    } catch {
+      const t = $("#capture-text");
+      t.closest("details").open = true;
+      t.select();
+      document.execCommand("copy");
+    }
+    toast("Capture script copied. Paste it into the M HUB tab's Console.", "ok");
+  };
   (async () => {
     if (!hidAvailable()) return;
     const granted = await navigator.hid.getDevices();
     const m = granted.find(isA7V2);
     if (m) await connectMouse(m);
     const k = granted.filter(isAce68);
-    if (k.length) await connectKeyboard(k.find(isVendorCollection) || k[0]);
+    if (k.length) await connectKeyboard(await siblings(k));
   })();
 })();

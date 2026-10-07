@@ -3,6 +3,7 @@ import { A7V2, HID_FILTERS as MOUSE_FILTERS, isA7V2 } from './a7v2/driver.js';
 import * as Ace from './ace68/device.js';
 import { KEYS, keyLabel } from './keys.js';
 import { collectionsSummary, hidAvailable } from './hid.js';
+import { captureSnippet } from './capture.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, props = {}, ...children) => {
@@ -102,24 +103,34 @@ $('#mouse-disconnect').onclick = async () => {
   $('#mouse').hidden = true;
 };
 
-async function connectKeyboard(device) {
-  keyboard?.close();
-  keyboard = new Ace.RawSession(device, { onReport: ({ dir, reportId, bytes }) => logEntry(dir, reportId, bytes) });
+async function connectKeyboard(devices) {
+  await keyboard?.close().catch(() => {});
+  keyboard = new Ace.RawSession(devices, { onReport: ({ dir, reportId, bytes }) => logEntry(dir, reportId, bytes) });
   try {
     await keyboard.open();
   } catch (e) {
     toast(`Could not open the keyboard: ${e.message}`, 'err');
     return;
   }
-  renderKeyboard(device);
+  renderKeyboard(keyboard.devices);
   $('#keyboard').hidden = false;
 }
 
+// Every interface of the same physical keyboard that this page may use.
+async function siblings(devices) {
+  const [first] = devices;
+  const granted = await navigator.hid.getDevices();
+  const same = granted.filter((d) => d.vendorId === first.vendorId && d.productId === first.productId);
+  return [...new Set([...devices, ...same])];
+}
+
 async function pickKeyboard(filters) {
-  const devices = await navigator.hid.requestDevice({ filters }).catch(() => []);
-  // A keyboard exposes several interfaces; the vendor-defined one carries configuration.
-  const device = devices.find(Ace.isVendorCollection) || devices[0];
-  if (device) await connectKeyboard(device);
+  const picked = await navigator.hid.requestDevice({ filters }).catch(() => []);
+  if (!picked.length) return;
+  const all = await siblings(picked);
+  // The vendor-defined interface, which carries configuration, goes first.
+  all.sort((a, b) => Number(Ace.isVendorCollection(b)) - Number(Ace.isVendorCollection(a)));
+  await connectKeyboard(all);
 }
 
 $('#connect-keyboard').onclick = () => pickKeyboard(Ace.HID_FILTERS);
@@ -139,7 +150,7 @@ navigator.hid?.addEventListener('disconnect', (e) => {
     $('#mouse').hidden = true;
     toast('Mouse disconnected');
   }
-  if (keyboard && e.device === keyboard.device) {
+  if (keyboard && keyboard.owns(e.device)) {
     keyboard = null;
     $('#keyboard').hidden = true;
     toast('Keyboard disconnected');
@@ -151,7 +162,12 @@ navigator.hid?.addEventListener('disconnect', (e) => {
 let profileNames = [];
 async function loadProfileNames() {
   profileNames = [];
-  for (let i = 0; i < P.PROFILE_COUNT; i++) profileNames.push((await mouse.readProfileName(i)) || `Profile ${i + 1}`);
+  for (let i = 0; i < P.PROFILE_COUNT; i++) {
+    const name = await mouse.readProfileName(i);
+    // The factory names are Chinese ("default profile N"); show those as
+    // "Profile N" and keep names the user set.
+    profileNames.push(!name || /[\u3000-\u9fff]/.test(name) ? `Profile ${i + 1}` : name);
+  }
 }
 
 function segmented(container, items, current, onPick) {
@@ -361,18 +377,19 @@ function renderButtons() {
 
 /* ---------- keyboard UI ---------- */
 
-function renderKeyboard(device) {
+function renderKeyboard(devices) {
+  const device = devices[0];
   const model = Ace.modelFor(device);
   $('#keyboard-title').textContent = `MCHOSE ${model?.name ?? device.productName}`;
   const facts = [
-    ['Model', model?.name ?? 'unknown'],
+    ['Model', model?.name ?? 'not in the list'],
     ['Product name', device.productName || '—'],
     ['USB id', `${P.hex(device.vendorId, 4)}:${P.hex(device.productId, 4)}`],
-    ['Interface', Ace.isVendorCollection(device) ? 'vendor (configuration)' : 'standard HID'],
+    ['Interfaces', `${devices.length}${devices.some(Ace.isVendorCollection) ? ', incl. vendor (configuration)' : ', no vendor interface'}`],
   ];
   $('#keyboard-info').replaceChildren(...facts.map(([k, v]) => el('div', {}, el('dt', { textContent: k }), el('dd', { textContent: v }))));
   $('#collections tbody').replaceChildren(
-    ...collectionsSummary(device).map((c) =>
+    ...devices.flatMap((d) => collectionsSummary(d)).map((c) =>
       el('tr', {},
         el('td', { textContent: `${'  '.repeat(c.depth)}0x${P.hex(c.usagePage, 4)}` }),
         el('td', { textContent: `0x${P.hex(c.usage, 4)}` }),
@@ -396,6 +413,21 @@ $('#raw-output').onclick = () => rawGuard(() => keyboard.sendOutput(...rawArgs()
 $('#raw-feature').onclick = () => rawGuard(() => keyboard.sendFeature(...rawArgs()));
 $('#raw-read').onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0]));
 
+/* ---------- capture script ---------- */
+
+$('#capture-text').value = captureSnippet();
+$('#copy-capture').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(captureSnippet());
+  } catch {
+    const t = $('#capture-text');
+    t.closest('details').open = true;
+    t.select();
+    document.execCommand('copy');
+  }
+  toast('Capture script copied. Paste it into the M HUB tab\'s Console.', 'ok');
+};
+
 /* ---------- reconnect devices granted earlier ---------- */
 
 (async () => {
@@ -404,5 +436,5 @@ $('#raw-read').onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0])
   const m = granted.find(isA7V2);
   if (m) await connectMouse(m);
   const k = granted.filter(Ace.isAce68);
-  if (k.length) await connectKeyboard(k.find(Ace.isVendorCollection) || k[0]);
+  if (k.length) await connectKeyboard(await siblings(k));
 })();

@@ -173,17 +173,19 @@ export function parseFirmware(p) {
   return String.fromCharCode(...p.slice(1, 1 + n)).replace(/\0.*$/, '').trim();
 }
 
-// 0x12 0x68: profile index then NUL-terminated ASCII.
+// Names are UTF-8: the factory profile names are Chinese (默认配置1 ...).
+const utf8 = (bytes) => new TextDecoder('utf-8').decode(Uint8Array.from(bytes)).replace(/\0.*$/s, '').trim();
+
+// 0x12 0x68: profile index then NUL-terminated UTF-8.
 export function parseProfileName(p) {
   const end = p.indexOf(0, 1);
-  const raw = p.slice(1, end < 0 ? p.length : end);
-  return String.fromCharCode(...raw).trim();
+  return utf8(p.slice(1, end < 0 ? p.length : end));
 }
 
-// 0x12 0x63: button index, length, ASCII.
+// 0x12 0x63: button index, length, UTF-8.
 export function parseButtonName(p) {
   const n = Math.min(p[1], p.length - 2);
-  return String.fromCharCode(...p.slice(2, 2 + n)).replace(/\0.*$/, '').trim();
+  return utf8(p.slice(2, 2 + n));
 }
 
 /* ---------- the configuration blob (0x12 0x67 / 0x12 0x57) ---------- */

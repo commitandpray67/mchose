@@ -181,3 +181,8 @@ test('a reply without the leading report id still decodes', () => {
   assert.equal(r.cmd, 0x67);
   assert.equal(r.payload[0], 1);
 });
+
+test('profile names decode as UTF-8', () => {
+  const name = [...new TextEncoder().encode('默认配置1')];
+  assert.equal(P.parseProfileName([0, ...name, 0, 0x41]), '默认配置1');
+});

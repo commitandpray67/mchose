@@ -95,10 +95,10 @@
         <button id="keyboard-disconnect">Disconnect</button>
       </div>
       <div class="notice">
-        <strong>Settings for the Ace 68 aren't supported yet.</strong> MCHOSE hasn't published how the Ace 68 is configured, and nobody has
+        <strong>Keyboard settings aren't supported yet.</strong> MCHOSE hasn't published how its Ace keyboards are configured, and nobody has
         documented it yet. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
         It identifies the keyboard, shows its HID interfaces and every report it sends, and lets you record what the
-        official site does (see <a href="#capture">Capture the protocol</a>). One recording gives enough to add
+        official site does (see <a href="#capture">Record the keyboard protocol</a>). One recording gives enough to add
         actuation, rapid trigger, lighting and remapping here.
       </div>
       <dl id="keyboard-info" class="info"></dl>
@@ -131,14 +131,30 @@
     </section>
 
     <section id="capture" class="panel">
-      <h2>Capture the protocol from the official site</h2>
+      <h2>Record the keyboard protocol from the official site</h2>
       <ol>
-        <li>Open the official MCHOSE M HUB web driver in Chrome or Edge. Don't connect the keyboard yet. If it connects on its own, unplug and replug the keyboard after step 3.</li>
-        <li>Press F12, open the Console, paste the contents of <a href="tools/capture-mhub.js" target="_blank">tools/capture-mhub.js</a> and press Enter.</li>
-        <li>Connect the keyboard in M HUB. Before each change, run <code>mchoseCapture.mark('what you are about to change')</code>, then make that one change.</li>
-        <li>Run <code>mchoseCapture.download()</code> and add the JSON file to this repository under <code>captures/</code>.</li>
+        <li>Close this page's keyboard connection (Disconnect above), so only M HUB talks to the keyboard.</li>
+        <li>Open the official MCHOSE M HUB web driver in Chrome or Edge, in a new tab.</li>
+        <li>Click <button id="copy-capture" class="primary">Copy capture script</button> here.</li>
+        <li>In the M HUB tab, press <kbd>F12</kbd> and open the <b>Console</b> tab. Paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) and press <kbd>Enter</kbd>.
+          If Chrome warns about pasting, type <code>allow pasting</code>, press <kbd>Enter</kbd>, then paste again.
+          You should see <i>mchoseCapture installed</i>.</li>
+        <li>Connect or select the keyboard in M HUB. Then, for each setting you want here, type a label in the Console and press <kbd>Enter</kbd>, then make that one change in M HUB. For example:
+          <pre class="log">mchoseCapture.mark('actuation all keys 2.0 -> 1.0 mm')
+mchoseCapture.mark('rapid trigger on')
+mchoseCapture.mark('rapid trigger sensitivity 0.3 -> 0.1')
+mchoseCapture.mark('lighting effect static, red')
+mchoseCapture.mark('brightness max -> min')
+mchoseCapture.mark('remap CapsLock -> Ctrl')
+mchoseCapture.mark('polling rate 1000 -> 8000')</pre>
+          Change one thing at a time, and use values you can recognise (going from one extreme to the other helps).</li>
+        <li>Type <code>mchoseCapture.download()</code> and press <kbd>Enter</kbd>. A <code>mchose-capture-….json</code> file is saved to your Downloads. Send that file.</li>
       </ol>
-      <p class="hint">The script only records the traffic and passes every call through unchanged.</p>
+      <details>
+        <summary>Can't copy? Select the script here</summary>
+        <textarea id="capture-text" class="log" rows="8" readonly></textarea>
+      </details>
+      <p class="hint">The script only records the traffic and passes every call through unchanged. Reloading the M HUB tab removes it.</p>
     </section>
   </main>
 

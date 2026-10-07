@@ -24,19 +24,19 @@ memory and read back to confirm it.
 - Button remapping: mouse buttons, keyboard keys with Ctrl/Shift/Alt/Win, media keys, DPI, profile switching, or
   disabled. Buttons that already hold a macro keep it.
 
-### Ace 68 keyboard: connection and protocol capture
+### Ace keyboards: connection and protocol capture
 
-The app recognises the Ace 68, Ace 68 V2, Ace 68 Turbo and Ace 68 GT, and shows the keyboard's HID interfaces. It logs
+The app recognises the Ace 68 (V2, Turbo, GT) and Ace 60 (Pro, 60X), and shows all of the keyboard's HID interfaces. It logs
 every report the keyboard sends, and you can send reports by hand.
 
-**It can't change Ace 68 settings yet** (actuation, rapid trigger, lighting, key remapping). The Ace keyboards use a
+**It can't change keyboard settings yet** (actuation, rapid trigger, lighting, key remapping). The Ace keyboards use a
 different protocol from the mouse, and nobody has published it. Rather than send made-up commands to your keyboard,
 the app includes a recorder for the official site:
 
-1. Open the M HUB web driver and press F12 to open the Console.
-2. Paste in [`tools/capture-mhub.js`](tools/capture-mhub.js) and press Enter.
-3. Connect the keyboard and change one setting at a time. Before each change, run
-   `mchoseCapture.mark('…')` to label it.
+1. Click **Copy capture script** at the bottom of the app.
+2. Open the M HUB web driver, press F12, and paste the script into the Console. If Chrome asks, type
+   `allow pasting` first.
+3. Change one setting at a time in M HUB. Before each change, run `mchoseCapture.mark('…')` to label it.
 4. Run `mchoseCapture.download()`.
 
 The recorder passes every call through unchanged; it only watches. One recording like this is enough to add the
@@ -84,7 +84,7 @@ src/a7v2/protocol.js      A7 V2 frame and config encoding/decoding (pure, unit t
 src/a7v2/driver.js        A7 V2 request sequencing, retries and read-back checks
 src/ace68/device.js       Ace 68 detection and raw HID session
 src/hid.js                WebHID helpers (serial queue, report helpers)
-tools/capture-mhub.js     records the official web driver's HID traffic
+src/capture.js            the capture script for the official web driver (copied from the page)
 tests/                    node:test suites, including a simulated A7 V2
 ```
 
