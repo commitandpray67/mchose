@@ -423,20 +423,31 @@ $('#raw-read').onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0])
 
 /* ---------- Ace 60 (read-only) ---------- */
 
-$('#ace60-read').onclick = async () => {
-  if (!ace60) return;
-  const btn = $('#ace60-read');
-  btn.disabled = true;
+let ace60State = null;
+
+async function ace60Job(label, job) {
+  const buttons = document.querySelectorAll('#ace60 button');
+  buttons.forEach((n) => (n.disabled = true));
   try {
-    const r = await ace60.load();
-    renderAce60(r);
-    toast('Read the keyboard settings', 'ok');
+    await job();
+    ace60State = await ace60.load();
+    renderAce60(ace60State);
+    if (label) toast(label, 'ok');
   } catch (e) {
+    console.error(e);
     toast(e.message, 'err');
   } finally {
-    btn.disabled = false;
+    buttons.forEach((n) => (n.disabled = false));
   }
-};
+}
+
+$('#ace60-read').onclick = () => ace60 && ace60Job('Read the keyboard settings', async () => {});
+
+// Key slots in use, labelled by their physical key.
+const usedSlots = () =>
+  ace60State.layers[0].keys
+    .filter((k) => !K.isEmpty(k) || K.KEY_NAMES[k.slot])
+    .map((k) => ({ slot: k.slot, label: K.KEY_NAMES[k.slot] || K.describeEntry(k, keyLabel) || `slot ${k.slot}` }));
 
 function renderAce60({ info, profile, settings, layers, switches }) {
   const facts = [
@@ -450,21 +461,93 @@ function renderAce60({ info, profile, settings, layers, switches }) {
   for (let slot = 0; slot < K.KEY_SLOTS; slot++) {
     const cells = layers.map((l) => K.describeEntry(l.keys[slot], keyLabel));
     if (cells.every((c) => !c)) continue;
-    rows.push(el('tr', {}, el('td', { textContent: slot }), ...cells.map((c) => el('td', { textContent: c || '—' }))));
+    rows.push(el('tr', {}, el('td', { textContent: K.KEY_NAMES[slot] || `slot ${slot}` }), ...cells.map((c) => el('td', { textContent: c || '—' }))));
   }
   $('#ace60-keymap tbody').replaceChildren(...rows);
 
+  const used = usedSlots();
   const groups = new Map();
-  switches.forEach((v, slot) => {
-    if (layers[0].keys[slot] && K.isEmpty(layers[0].keys[slot])) return;
-    const key = v.join(' / ');
-    groups.set(key, [...(groups.get(key) || []), slot]);
-  });
+  for (const { slot, label } of used) {
+    const sw = switches[slot];
+    const key = `${sw.actuation}|${sw.mode}|${sw.raw.join(' / ')}`;
+    groups.set(key, [...(groups.get(key) || []), label]);
+  }
   $('#ace60-switches tbody').replaceChildren(
-    ...[...groups].map(([values, slots]) => el('tr', {}, el('td', { textContent: slots.length === 1 ? `slot ${slots[0]}` : `${slots.length} keys` }), el('td', { textContent: values }))),
+    ...[...groups].map(([key, labels]) => {
+      const [act, mode, raw] = key.split('|');
+      return el('tr', {},
+        el('td', { textContent: labels.length > 6 ? `${labels.length} keys` : labels.join(', ') }),
+        el('td', { textContent: `${(act / 10).toFixed(1)} mm` }),
+        el('td', { textContent: mode }),
+        el('td', { textContent: raw }));
+    }),
   );
   $('#ace60-settings').textContent = P.hexBytes(settings);
+
+  // Editors
+  $('#ace60-edit').hidden = false;
+  const acts = [...new Set(used.map(({ slot }) => switches[slot].actuation))];
+  $('#act-now').textContent = `Now: ${acts.map((a) => `${(a / 10).toFixed(1)} mm`).join(', ')}`;
+  $('#act-keys').replaceChildren(
+    ...used.map(({ slot, label }) =>
+      el('label', { className: 'check' }, el('input', { type: 'checkbox', value: slot }), label)),
+  );
+  const layerSel = $('#remap-layer');
+  const keepLayer = layerSel.value;
+  layerSel.replaceChildren(...K.LAYERS.map((l, i) => el('option', { value: i, textContent: l.name, selected: String(i) === keepLayer })));
+  fillRemapKeys();
 }
+
+$('#act-scope').onchange = (e) => ($('#act-keys').hidden = e.target.value !== 'pick');
+
+$('#act-apply').onclick = () => {
+  const mm = Number($('#act-mm').value);
+  const tenths = Math.round(mm * 10);
+  if (!(tenths >= K.ACTUATION_MIN && tenths <= K.ACTUATION_MAX)) return toast('Actuation must be 0.1-4.0 mm', 'err');
+  const used = usedSlots();
+  const scope = $('#act-scope').value;
+  const wasd = ['W', 'A', 'S', 'D'];
+  const slots =
+    scope === 'all' ? used.map((u) => u.slot)
+    : scope === 'wasd' ? used.filter((u) => wasd.includes(u.label)).map((u) => u.slot)
+    : [...document.querySelectorAll('#act-keys input:checked')].map((n) => Number(n.value));
+  if (!slots.length) return toast('Pick at least one key', 'err');
+  ace60Job(`Actuation set to ${(tenths / 10).toFixed(1)} mm on ${slots.length} key${slots.length > 1 ? 's' : ''}`, () => ace60.setActuation(slots, tenths));
+};
+
+function fillRemapKeys() {
+  const layer = ace60State.layers[Number($('#remap-layer').value) || 0];
+  const keep = $('#remap-key').value;
+  $('#remap-key').replaceChildren(
+    ...usedSlots().map(({ slot, label }) => {
+      const now = K.describeEntry(layer.keys[slot], keyLabel) || '—';
+      return el('option', { value: slot, textContent: `${label}  (now: ${now})`, selected: String(slot) === keep });
+    }),
+  );
+  fillRemapValues();
+}
+
+function fillRemapValues() {
+  const type = $('#remap-type').value;
+  const opts =
+    type === 'key' ? KEYS.map((k) => ({ label: k.label, value: [K.ENTRY.key, 0, k.usage] }))
+    : type === 'mouse' ? Object.entries(K.MOUSE_BUTTONS).map(([v, label]) => ({ label, value: [K.ENTRY.mouse, Number(v), 0] }))
+    : Object.entries(K.MEDIA).map(([v, label]) => ({ label, value: [K.ENTRY.media, Number(v), 0] }));
+  $('#remap-value').replaceChildren(...opts.map((o) => el('option', { value: o.value.join(','), textContent: o.label })));
+}
+
+$('#remap-layer').onchange = fillRemapKeys;
+$('#remap-type').onchange = fillRemapValues;
+$('#remap-apply').onclick = () => {
+  const layer = K.LAYERS[Number($('#remap-layer').value)];
+  const slot = Number($('#remap-key').value);
+  const entry = $('#remap-value').value.split(',').map(Number);
+  const label = $('#remap-key').selectedOptions[0].textContent.split('  (')[0];
+  if (K.KEY_NAMES[slot] === 'Fn' && !(entry[0] === K.ENTRY.fn && entry[1] === 0xff)) {
+    if (!confirm('This replaces the Fn key, which you need to reach the Fn layer. Continue?')) return;
+  }
+  ace60Job(`${label} remapped on ${layer.name}`, () => ace60.setKey(layer.offset, slot, entry));
+};
 
 /* ---------- capture script ---------- */
 

@@ -788,8 +788,11 @@
     // sent by the keyboard on its own
     switches: 160,
     // 128 keys x 8 bytes of magnetic switch settings
-    hostRead: 241
+    hostRead: 241,
     // storage M HUB keeps on the keyboard for itself
+    writeSettings: 6,
+    writeKeymap: 9,
+    writeSwitches: 161
   };
   var BLOCK_LEN = {
     [CMD2.settings]: 64,
@@ -835,8 +838,10 @@
     { name: "Mac", offset: 1024 },
     { name: "Mac Fn", offset: 1536 }
   ];
-  var ENTRY = { none: 0, key: 16, media: 48, fn: 240 };
+  var ENTRY = { none: 0, key: 16, mouse: 32, media: 48, fn: 240 };
+  var MOUSE_BUTTONS = { 1: "Left click", 2: "Right click", 4: "Middle click", 8: "Back", 16: "Forward" };
   var MODS = ["Ctrl", "Shift", "Alt", "Win", "Right Ctrl", "Right Shift", "Right Alt", "Right Win"];
+  var KEY_NAMES = { 0: "Esc", 13: "1", 14: "2", 15: "3", 16: "4", 17: "5", 18: "6", 19: "7", 20: "8", 21: "9", 22: "0", 23: "-", 24: "Tab", 25: "Q", 26: "W", 27: "E", 28: "R", 29: "T", 30: "Y", 31: "U", 32: "I", 33: "O", 34: "P", 35: "[", 36: "Caps Lock", 37: "A", 38: "S", 39: "D", 40: "F", 41: "G", 42: "H", 43: "J", 44: "K", 45: "L", 46: ";", 47: "'", 48: "Shift", 49: "Z", 50: "X", 51: "C", 52: "V", 53: "B", 54: "N", 55: "M", 56: ",", 57: ".", 58: "/", 59: "Right Shift", 60: "Ctrl", 61: "Win", 62: "Alt", 63: "Space", 64: "Right Alt", 65: "Menu", 66: "Right Ctrl", 67: "Fn", 71: "Enter", 73: "=", 74: "Backspace", 76: "]", 77: "\\" };
   function parseLayer(block, offset) {
     const keys = [];
     for (let i = 0; i < KEY_SLOTS; i++) {
@@ -853,7 +858,9 @@
       if (!k.code) return mods.join(" + ");
       return [...mods, keyLabel2(k.code)].join(" + ");
     }
+    if (k.type === ENTRY.mouse) return MOUSE_BUTTONS[k.arg] || `Mouse 0x${k.arg.toString(16)}`;
     if (k.type === ENTRY.media) return MEDIA[k.arg] || `Media 0x${k.arg.toString(16)}`;
+    if (k.type === 147 || k.type === 148) return `Snap Tap with slot ${k.code}`;
     if (k.type === ENTRY.fn) return k.arg === 255 ? "Fn" : `Function 0x${k.arg.toString(16)}`;
     return `0x${[k.type, k.arg, k.code].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
   }
@@ -866,14 +873,47 @@
     233: "Volume up",
     234: "Volume down"
   };
+  var SWITCH_LEN = 8;
+  var ACTUATION_MIN = 1;
+  var ACTUATION_MAX = 40;
   function parseSwitches(block) {
     const out = [];
     for (let i = 0; i < KEY_SLOTS; i++) {
-      const o = i * 8;
+      const o = i * SWITCH_LEN;
       const u = (j) => block[o + j] | block[o + j + 1] << 8;
-      out.push([u(0), u(2), u(4), u(6)]);
+      out.push({ raw: [u(0), u(2), u(4), u(6)], mode: block[o + 1], actuation: u(4) });
     }
     return out;
+  }
+  function setActuation(block, slots, tenthsMm) {
+    if (!Number.isInteger(tenthsMm) || tenthsMm < ACTUATION_MIN || tenthsMm > ACTUATION_MAX) {
+      throw new Error(`actuation must be ${ACTUATION_MIN / 10}-${ACTUATION_MAX / 10} mm`);
+    }
+    const b = Uint8Array.from(block);
+    for (const s of slots) {
+      const o = s * SWITCH_LEN;
+      b[o + 4] = b[o + 6] = tenthsMm & 255;
+      b[o + 5] = b[o + 7] = tenthsMm >> 8;
+    }
+    return b;
+  }
+  function switchWriteChunks(before, after) {
+    const chunks2 = [];
+    let coveredTo = 0;
+    for (let s = 0; s < KEY_SLOTS; s++) {
+      const o = s * SWITCH_LEN;
+      const changed = after.slice(o, o + SWITCH_LEN).some((b, i) => b !== before[o + i]);
+      if (!changed || o < coveredTo) continue;
+      const start = Math.min(o, BLOCK_LEN[CMD2.switches] - CHUNK);
+      chunks2.push({ offset: start, data: Array.from(after.slice(start, start + CHUNK)) });
+      coveredTo = start + CHUNK;
+    }
+    return chunks2;
+  }
+  var KEYMAP_REGION = 57;
+  function keymapWriteChunks(keymap, layerOffset, slot) {
+    const start = Math.min(layerOffset + slot * 3, layerOffset + LAYER_LEN - KEYMAP_REGION);
+    return [start, start + KEYMAP_REGION - CHUNK].map((offset) => ({ offset, data: Array.from(keymap.slice(offset, offset + CHUNK)) }));
   }
 
   // src/ace60/driver.js
@@ -919,12 +959,65 @@
       for (const { offset, len } of chunks(total)) into.set(await this.request(cmd, base + offset, len), base + offset);
       return into;
     }
+    // Sends one write frame and waits for the keyboard to echo it.
+    write(cmd, offset, data, { timeout = 800, tries = 3 } = {}) {
+      return this.queue.run(async () => {
+        const frame = encodeRequest2(cmd, offset, CHUNK, data);
+        for (let attempt = 0; attempt < tries; attempt++) {
+          const echoed = new Promise((resolve) => {
+            const done = (v) => {
+              clearTimeout(timer);
+              this.device.removeEventListener("inputreport", onReport);
+              resolve(v);
+            };
+            const onReport = (e) => {
+              if (e.reportId !== 0) return;
+              const r = decodeReply2(dataViewBytes(e.data));
+              if (r && r.cmd === cmd && r.offset === offset) done(true);
+            };
+            const timer = setTimeout(() => done(false), timeout);
+            this.device.addEventListener("inputreport", onReport);
+          });
+          this.log("tx", 0, frame);
+          await this.device.sendReport(0, frame);
+          if (await echoed) return;
+        }
+        throw new Error(`the keyboard did not confirm write 0x${cmd.toString(16)} at offset ${offset}`);
+      });
+    }
+    async readSwitchBlock() {
+      return this.readBlock(CMD2.switches, BLOCK_LEN[CMD2.switches]);
+    }
+    async readKeymap() {
+      const keymap = new Uint8Array(BLOCK_LEN[CMD2.keymap]);
+      for (const l of LAYERS) await this.readBlock(CMD2.keymap, LAYER_LEN, l.offset, keymap);
+      return keymap;
+    }
+    // Sets the actuation point of the given key slots, then reads the block
+    // back to check it landed.
+    async setActuation(slots, tenthsMm) {
+      const before = await this.readSwitchBlock();
+      const after = setActuation(before, slots, tenthsMm);
+      for (const c of switchWriteChunks(before, after)) await this.write(CMD2.writeSwitches, c.offset, c.data);
+      const check = parseSwitches(await this.readSwitchBlock());
+      if (!slots.every((s) => check[s].actuation === tenthsMm)) throw new Error("the keyboard did not keep the new actuation");
+      return check;
+    }
+    // Replaces one key map entry [type, arg, code] on one layer.
+    async setKey(layerOffset, slot, entry) {
+      const keymap = await this.readKeymap();
+      const at = layerOffset + slot * 3;
+      keymap.set(entry, at);
+      for (const c of keymapWriteChunks(keymap, layerOffset, slot)) await this.write(CMD2.writeKeymap, c.offset, c.data);
+      const check = await this.readKeymap();
+      if (!entry.every((b, i) => check[at + i] === b)) throw new Error("the keyboard did not keep the new key");
+      return check;
+    }
     async load() {
       const info = parseInfo(await this.request(CMD2.info));
       const profile = parseProfile(await this.request(CMD2.profile));
       const settings = await this.readBlock(CMD2.settings, BLOCK_LEN[CMD2.settings]);
-      const keymap = new Uint8Array(BLOCK_LEN[CMD2.keymap]);
-      for (const l of LAYERS) await this.readBlock(CMD2.keymap, LAYER_LEN, l.offset, keymap);
+      const keymap = await this.readKeymap();
       const switches = parseSwitches(await this.readBlock(CMD2.switches, BLOCK_LEN[CMD2.switches]));
       const layers = LAYERS.map((l) => ({ ...l, keys: parseLayer(keymap, l.offset) }));
       return { info, profile, settings, layers, switches };
@@ -1309,20 +1402,25 @@
   $("#raw-output").onclick = () => rawGuard(() => keyboard.sendOutput(...rawArgs()));
   $("#raw-feature").onclick = () => rawGuard(() => keyboard.sendFeature(...rawArgs()));
   $("#raw-read").onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0]));
-  $("#ace60-read").onclick = async () => {
-    if (!ace60) return;
-    const btn = $("#ace60-read");
-    btn.disabled = true;
+  var ace60State = null;
+  async function ace60Job(label, job) {
+    const buttons = document.querySelectorAll("#ace60 button");
+    buttons.forEach((n) => n.disabled = true);
     try {
-      const r = await ace60.load();
-      renderAce60(r);
-      toast("Read the keyboard settings", "ok");
+      await job();
+      ace60State = await ace60.load();
+      renderAce60(ace60State);
+      if (label) toast(label, "ok");
     } catch (e) {
+      console.error(e);
       toast(e.message, "err");
     } finally {
-      btn.disabled = false;
+      buttons.forEach((n) => n.disabled = false);
     }
-  };
+  }
+  $("#ace60-read").onclick = () => ace60 && ace60Job("Read the keyboard settings", async () => {
+  });
+  var usedSlots = () => ace60State.layers[0].keys.filter((k) => !isEmpty(k) || KEY_NAMES[k.slot]).map((k) => ({ slot: k.slot, label: KEY_NAMES[k.slot] || describeEntry(k, keyLabel) || `slot ${k.slot}` }));
   function renderAce60({ info, profile, settings, layers, switches }) {
     const facts = [
       ["Firmware", info.version],
@@ -1334,20 +1432,81 @@
     for (let slot = 0; slot < KEY_SLOTS; slot++) {
       const cells = layers.map((l) => describeEntry(l.keys[slot], keyLabel));
       if (cells.every((c) => !c)) continue;
-      rows.push(el("tr", {}, el("td", { textContent: slot }), ...cells.map((c) => el("td", { textContent: c || "\u2014" }))));
+      rows.push(el("tr", {}, el("td", { textContent: KEY_NAMES[slot] || `slot ${slot}` }), ...cells.map((c) => el("td", { textContent: c || "\u2014" }))));
     }
     $("#ace60-keymap tbody").replaceChildren(...rows);
+    const used = usedSlots();
     const groups = /* @__PURE__ */ new Map();
-    switches.forEach((v, slot) => {
-      if (layers[0].keys[slot] && isEmpty(layers[0].keys[slot])) return;
-      const key = v.join(" / ");
-      groups.set(key, [...groups.get(key) || [], slot]);
-    });
+    for (const { slot, label } of used) {
+      const sw = switches[slot];
+      const key = `${sw.actuation}|${sw.mode}|${sw.raw.join(" / ")}`;
+      groups.set(key, [...groups.get(key) || [], label]);
+    }
     $("#ace60-switches tbody").replaceChildren(
-      ...[...groups].map(([values, slots]) => el("tr", {}, el("td", { textContent: slots.length === 1 ? `slot ${slots[0]}` : `${slots.length} keys` }), el("td", { textContent: values })))
+      ...[...groups].map(([key, labels]) => {
+        const [act, mode, raw] = key.split("|");
+        return el(
+          "tr",
+          {},
+          el("td", { textContent: labels.length > 6 ? `${labels.length} keys` : labels.join(", ") }),
+          el("td", { textContent: `${(act / 10).toFixed(1)} mm` }),
+          el("td", { textContent: mode }),
+          el("td", { textContent: raw })
+        );
+      })
     );
     $("#ace60-settings").textContent = hexBytes(settings);
+    $("#ace60-edit").hidden = false;
+    const acts = [...new Set(used.map(({ slot }) => switches[slot].actuation))];
+    $("#act-now").textContent = `Now: ${acts.map((a) => `${(a / 10).toFixed(1)} mm`).join(", ")}`;
+    $("#act-keys").replaceChildren(
+      ...used.map(({ slot, label }) => el("label", { className: "check" }, el("input", { type: "checkbox", value: slot }), label))
+    );
+    const layerSel = $("#remap-layer");
+    const keepLayer = layerSel.value;
+    layerSel.replaceChildren(...LAYERS.map((l, i) => el("option", { value: i, textContent: l.name, selected: String(i) === keepLayer })));
+    fillRemapKeys();
   }
+  $("#act-scope").onchange = (e) => $("#act-keys").hidden = e.target.value !== "pick";
+  $("#act-apply").onclick = () => {
+    const mm = Number($("#act-mm").value);
+    const tenths = Math.round(mm * 10);
+    if (!(tenths >= ACTUATION_MIN && tenths <= ACTUATION_MAX)) return toast("Actuation must be 0.1-4.0 mm", "err");
+    const used = usedSlots();
+    const scope = $("#act-scope").value;
+    const wasd = ["W", "A", "S", "D"];
+    const slots = scope === "all" ? used.map((u) => u.slot) : scope === "wasd" ? used.filter((u) => wasd.includes(u.label)).map((u) => u.slot) : [...document.querySelectorAll("#act-keys input:checked")].map((n) => Number(n.value));
+    if (!slots.length) return toast("Pick at least one key", "err");
+    ace60Job(`Actuation set to ${(tenths / 10).toFixed(1)} mm on ${slots.length} key${slots.length > 1 ? "s" : ""}`, () => ace60.setActuation(slots, tenths));
+  };
+  function fillRemapKeys() {
+    const layer = ace60State.layers[Number($("#remap-layer").value) || 0];
+    const keep = $("#remap-key").value;
+    $("#remap-key").replaceChildren(
+      ...usedSlots().map(({ slot, label }) => {
+        const now = describeEntry(layer.keys[slot], keyLabel) || "\u2014";
+        return el("option", { value: slot, textContent: `${label}  (now: ${now})`, selected: String(slot) === keep });
+      })
+    );
+    fillRemapValues();
+  }
+  function fillRemapValues() {
+    const type = $("#remap-type").value;
+    const opts = type === "key" ? KEYS.map((k) => ({ label: k.label, value: [ENTRY.key, 0, k.usage] })) : type === "mouse" ? Object.entries(MOUSE_BUTTONS).map(([v, label]) => ({ label, value: [ENTRY.mouse, Number(v), 0] })) : Object.entries(MEDIA).map(([v, label]) => ({ label, value: [ENTRY.media, Number(v), 0] }));
+    $("#remap-value").replaceChildren(...opts.map((o) => el("option", { value: o.value.join(","), textContent: o.label })));
+  }
+  $("#remap-layer").onchange = fillRemapKeys;
+  $("#remap-type").onchange = fillRemapValues;
+  $("#remap-apply").onclick = () => {
+    const layer = LAYERS[Number($("#remap-layer").value)];
+    const slot = Number($("#remap-key").value);
+    const entry = $("#remap-value").value.split(",").map(Number);
+    const label = $("#remap-key").selectedOptions[0].textContent.split("  (")[0];
+    if (KEY_NAMES[slot] === "Fn" && !(entry[0] === ENTRY.fn && entry[1] === 255)) {
+      if (!confirm("This replaces the Fn key, which you need to reach the Fn layer. Continue?")) return;
+    }
+    ace60Job(`${label} remapped on ${layer.name}`, () => ace60.setKey(layer.offset, slot, entry));
+  };
   $("#capture-text").value = captureSnippet();
   $("#copy-capture").onclick = async () => {
     try {

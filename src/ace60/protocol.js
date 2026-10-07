@@ -16,9 +16,10 @@
 //   [7]    0
 //   [8..]  data (zero in read requests)
 //
-// A reply echoes the command, length and offset of its request. Only the
-// read commands are known so far; the commands that change settings have
-// not been captured yet, so nothing here writes.
+// A reply echoes the command, length and offset of its request; a write is
+// echoed back whole. Writes use the read command + 1 (keymap 0x08 -> 0x09,
+// switches 0xa0 -> 0xa1, settings 0x05 -> 0x06), as recorded in
+// captures/ace60-mhub-changes.json.
 
 export const FRAME_LEN = 64;
 export const CHUNK = 56;
@@ -34,6 +35,9 @@ export const CMD = {
   notify: 0xa9, // sent by the keyboard on its own
   switches: 0xa0, // 128 keys x 8 bytes of magnetic switch settings
   hostRead: 0xf1, // storage M HUB keeps on the keyboard for itself
+  writeSettings: 0x06,
+  writeKeymap: 0x09,
+  writeSwitches: 0xa1,
 };
 
 // Total size M HUB reads for each block.
@@ -99,9 +103,14 @@ export const LAYERS = [
 ];
 
 // Entry types: [type, arg, code].
-export const ENTRY = { none: 0x00, key: 0x10, media: 0x30, fn: 0xf0 };
+export const ENTRY = { none: 0x00, key: 0x10, mouse: 0x20, media: 0x30, fn: 0xf0 };
+export const MOUSE_BUTTONS = { 0x01: 'Left click', 0x02: 'Right click', 0x04: 'Middle click', 0x08: 'Back', 0x10: 'Forward' };
 
 const MODS = ['Ctrl', 'Shift', 'Alt', 'Win', 'Right Ctrl', 'Right Shift', 'Right Alt', 'Right Win'];
+
+// Physical key in each used slot, from the factory Windows layer, so keys
+// keep their names after being remapped.
+export const KEY_NAMES = { 0: "Esc", 13: "1", 14: "2", 15: "3", 16: "4", 17: "5", 18: "6", 19: "7", 20: "8", 21: "9", 22: "0", 23: "-", 24: "Tab", 25: "Q", 26: "W", 27: "E", 28: "R", 29: "T", 30: "Y", 31: "U", 32: "I", 33: "O", 34: "P", 35: "[", 36: "Caps Lock", 37: "A", 38: "S", 39: "D", 40: "F", 41: "G", 42: "H", 43: "J", 44: "K", 45: "L", 46: ";", 47: "'", 48: "Shift", 49: "Z", 50: "X", 51: "C", 52: "V", 53: "B", 54: "N", 55: "M", 56: ",", 57: ".", 58: "/", 59: "Right Shift", 60: "Ctrl", 61: "Win", 62: "Alt", 63: "Space", 64: "Right Alt", 65: "Menu", 66: "Right Ctrl", 67: "Fn", 71: "Enter", 73: "=", 74: "Backspace", 76: "]", 77: "\\" };
 
 export function parseLayer(block, offset) {
   const keys = [];
@@ -123,12 +132,15 @@ export function describeEntry(k, keyLabel) {
     if (!k.code) return mods.join(' + ');
     return [...mods, keyLabel(k.code)].join(' + ');
   }
+  if (k.type === ENTRY.mouse) return MOUSE_BUTTONS[k.arg] || `Mouse 0x${k.arg.toString(16)}`;
   if (k.type === ENTRY.media) return MEDIA[k.arg] || `Media 0x${k.arg.toString(16)}`;
+  // Snap Tap / SOCD: code is the partner key's slot (A 93 00 27 <-> D 93 01 25).
+  if (k.type === 0x93 || k.type === 0x94) return `Snap Tap with slot ${k.code}`;
   if (k.type === ENTRY.fn) return k.arg === 0xff ? 'Fn' : `Function 0x${k.arg.toString(16)}`;
   return `0x${[k.type, k.arg, k.code].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
 }
 
-const MEDIA = {
+export const MEDIA = {
   0xb5: 'Next track',
   0xb6: 'Previous track',
   0xb7: 'Stop',
@@ -140,16 +152,62 @@ const MEDIA = {
 
 /* ---------- magnetic switches ---------- */
 
-// 8 bytes per key slot, four little-endian u16 values. Their meaning
-// (actuation point, rapid-trigger press/release sensitivity...) and units
-// are not confirmed yet: every key read 416 / 74 / 14 / 14 on the factory
-// settings. A capture that changes them one at a time will pin them down.
+// 8 bytes per key slot. Known from the recorded changes:
+//   bytes 4-5 and 6-7  actuation point, u16, 0.1 mm steps; M HUB writes the
+//                      same value to both (14 = 1.4 mm on factory settings,
+//                      set to 12, 5 and 13 in the recording)
+//   byte 1             1 normally, 2 after an unlabelled change (rapid trigger?)
+//   bytes 0, 2-3       0xa0 and 74, never changed
+export const SWITCH_LEN = 8;
+export const ACTUATION_MIN = 1; // 0.1 mm
+export const ACTUATION_MAX = 40; // 4.0 mm
+
 export function parseSwitches(block) {
   const out = [];
   for (let i = 0; i < KEY_SLOTS; i++) {
-    const o = i * 8;
+    const o = i * SWITCH_LEN;
     const u = (j) => block[o + j] | (block[o + j + 1] << 8);
-    out.push([u(0), u(2), u(4), u(6)]);
+    out.push({ raw: [u(0), u(2), u(4), u(6)], mode: block[o + 1], actuation: u(4) });
   }
   return out;
+}
+
+export function setActuation(block, slots, tenthsMm) {
+  if (!Number.isInteger(tenthsMm) || tenthsMm < ACTUATION_MIN || tenthsMm > ACTUATION_MAX) {
+    throw new Error(`actuation must be ${ACTUATION_MIN / 10}-${ACTUATION_MAX / 10} mm`);
+  }
+  const b = Uint8Array.from(block);
+  for (const s of slots) {
+    const o = s * SWITCH_LEN;
+    b[o + 4] = b[o + 6] = tenthsMm & 0xff;
+    b[o + 5] = b[o + 7] = tenthsMm >> 8;
+  }
+  return b;
+}
+
+/* ---------- writes, chunked the way M HUB chunks them ---------- */
+
+// Switches: M HUB writes one 56-byte chunk starting at each changed key,
+// skipping keys a previous chunk already covered.
+export function switchWriteChunks(before, after) {
+  const chunks = [];
+  let coveredTo = 0;
+  for (let s = 0; s < KEY_SLOTS; s++) {
+    const o = s * SWITCH_LEN;
+    const changed = after.slice(o, o + SWITCH_LEN).some((b, i) => b !== before[o + i]);
+    if (!changed || o < coveredTo) continue;
+    const start = Math.min(o, BLOCK_LEN[CMD.switches] - CHUNK);
+    chunks.push({ offset: start, data: Array.from(after.slice(start, start + CHUNK)) });
+    coveredTo = start + CHUNK;
+  }
+  return chunks;
+}
+
+// Key map: M HUB writes 57 bytes from the changed key's entry, as two
+// 56-byte frames one byte apart (recorded for A at 0x6f/0x70 and D at
+// 0x75/0x76). `keymap` is the whole 4-layer block.
+export const KEYMAP_REGION = 57;
+export function keymapWriteChunks(keymap, layerOffset, slot) {
+  const start = Math.min(layerOffset + slot * 3, layerOffset + LAYER_LEN - KEYMAP_REGION);
+  return [start, start + KEYMAP_REGION - CHUNK].map((offset) => ({ offset, data: Array.from(keymap.slice(offset, offset + CHUNK)) }));
 }

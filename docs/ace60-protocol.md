@@ -4,7 +4,10 @@ Worked out from [`captures/ace60-mhub-read.json`](../captures/ace60-mhub-read.js
 web driver connecting to a real Ace 60 (it reports itself as `Ace 60`, USB `41e4:2101`, a Sinowealth controller).
 All 183 recorded keyboard frames match the frame and checksum below.
 
-The recording covers **reading** only. The commands that change settings haven't been captured yet.
+A second recording, [`captures/ace60-mhub-changes.json`](../captures/ace60-mhub-changes.json), has M HUB changing
+settings. The capture script didn't see M HUB's outgoing write requests, but the keyboard echoes each write back
+whole (`0xaa` in place of `0x55`; checked against M HUB's own `0xf2` storage writes, where both directions were
+recorded). So the echoes show exactly what was written.
 
 ## Interface
 
@@ -60,18 +63,48 @@ Each entry is `[type, arg, code]`:
 Slots past the matrix read `f0 f0 f0` or `ff ff ff`. Layer 0 is Windows, layer 1 is Windows Fn, layer 2 is Mac (Alt
 and Win swapped), and layer 3 is Mac Fn. 61 slots are used, which matches the Ace 60's 61 keys.
 
+## Write commands
+
+A write is the read command + 1. The frame has the same layout, with the data in bytes 8..63, always 56 bytes.
+The keyboard echoes it, and M HUB then re-reads the block.
+
+| Cmd | Writes | How M HUB chunks it |
+| --- | --- | --- |
+| `0x09` | key map | 57 bytes from the changed key's entry, as two frames one byte apart (A, slot 37 → offsets `0x6f`, `0x70`) |
+| `0xa1` | magnetic switches | one 56-byte frame starting at each changed key, skipping keys already covered by the previous frame |
+| `0x06` | general settings | the whole 64 bytes, as frames at `0x00` and `0x08` |
+| `0xa5` / `0xa4` | Snap Tap (SOCD) pairs | `10 00 04 10 00 07 10 00 07 10 00 04` for A ↔ D; not decoded further |
+
+The app's actuation and remap writes are checked in `tests/ace60.test.js` to be byte-identical to the recorded frames.
+
 ## Magnetic switch entries
 
-8 bytes per slot, read here as four little-endian u16 values. On factory settings, every key read
-`416 / 74 / 14 / 14` (`a0 01 4a 00 0e 00 0e 00`). Which value is the actuation point and which are the
-rapid-trigger press and release sensitivities, and in what units, needs a recording that changes each one.
+8 bytes per slot:
+
+| Bytes | Meaning |
+| --- | --- |
+| 4-5 and 6-7 | **actuation point**, u16, 0.1 mm steps. M HUB writes the same value to both. Factory 14 (1.4 mm); the recording set Esc/W/A/S/D to 12, 5 and 13, then back to 14. |
+| 1 | 1 normally. An unlabelled change set it to 2 on several keys, probably rapid trigger. |
+| 0, 2-3 | `0xa0` and 74, never changed |
+
+## Key map entry types seen in the second recording
+
+| Entry | Meaning |
+| --- | --- |
+| `20 01 00`, `20 02 00` | mouse left / right click (A and D were remapped to them) |
+| `93 00 27` / `93 01 25` | Snap Tap: A (slot 37) paired with slot `0x27` = 39 (D), and D with slot `0x25` = 37 (A). `94` is another Snap Tap mode. |
+
+The general settings block changed at byte 1 (`00`→`02`), byte 6 (`00`→`01`) and byte 7 (`06`→`07`/`e6`/`02`), all
+unlabelled.
+
+
 
 ## Next recording needed
 
-To add settings changes, record M HUB making one change at a time, each with a `mark`:
+Each change after its own `mark`, so it can be matched to the bytes:
 
-- actuation point, all keys, from one extreme to the other
-- rapid trigger on/off, then press and release sensitivity
-- one key remapped, e.g. Caps Lock → Ctrl
+- rapid trigger on, then off (to confirm switch byte 1)
+- rapid trigger press sensitivity, then release sensitivity
+- each general setting M HUB has (polling rate, Win lock, etc.), one at a time
 - one lighting change (effect, brightness, colour)
-- polling rate, if M HUB offers it
+- Snap Tap on for A/D, then off

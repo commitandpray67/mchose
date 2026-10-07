@@ -29,8 +29,10 @@ memory and read back to confirm it.
 The app recognises the Ace 68 (V2, Turbo, GT) and Ace 60 (Pro, 60X), and shows all of the keyboard's HID interfaces. It logs
 every report the keyboard sends, and you can send reports by hand.
 
-**Ace 60 (`41e4:2101`): reads settings.** Click *Read settings from keyboard* to see the firmware, active profile, the
-key map for all four layers, and the raw magnetic switch values. The protocol is documented in
+**Ace 60 (`41e4:2101`): reads settings, sets actuation, remaps keys.** Click *Read settings from keyboard* to see the
+firmware, active profile, the key map for all four layers and each key's actuation. You can then set the actuation
+point (0.1-4.0 mm) for all keys, WASD or keys you pick, and remap any key on any layer to a key, a mouse button or a
+media key. The protocol is documented in
 [`docs/ace60-protocol.md`](docs/ace60-protocol.md).
 
 **It can't change keyboard settings yet** (actuation, rapid trigger, lighting, key remapping). The Ace keyboards use a

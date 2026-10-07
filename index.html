@@ -95,9 +95,9 @@
         <button id="keyboard-disconnect">Disconnect</button>
       </div>
       <div class="notice">
-        <strong>Keyboard settings can be read but not changed yet.</strong> For the Ace 60 (41e4:2101) the app reads the key map,
-        switch settings and firmware, using the protocol recorded from the official site. Changing settings needs a recording of the
-        official site <em>changing</em> them. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
+        <strong>Ace 60 support is new.</strong> For the Ace 60 (41e4:2101) the app reads the key map, switch settings and firmware, and can
+        change the actuation point and remap keys, writing exactly what the official site writes. Rapid trigger, Snap Tap and lighting
+        need another labelled recording before they can be added. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
         It identifies the keyboard, shows its HID interfaces and every report it sends, and lets you record what the
         official site does (see <a href="#capture">Record the keyboard protocol</a>). One recording gives enough to add
         actuation, rapid trigger, lighting and remapping here.
@@ -110,14 +110,44 @@
           <span class="hint">Read-only. It sends the same read requests as the official site.</span>
         </div>
         <dl id="ace60-info" class="info"></dl>
+        <div id="ace60-edit" class="grid" hidden>
+          <div class="card">
+            <h3>Actuation point</h3>
+            <label>Keys
+              <select id="act-scope">
+                <option value="all">All keys</option>
+                <option value="wasd">W A S D</option>
+                <option value="pick">Pick keys…</option>
+              </select>
+            </label>
+            <div id="act-keys" class="keypick" hidden></div>
+            <label>Actuation (mm) <input type="number" id="act-mm" min="0.1" max="4.0" step="0.1" value="1.4"></label>
+            <button id="act-apply" class="primary">Apply actuation</button>
+            <p class="hint" id="act-now"></p>
+          </div>
+          <div class="card">
+            <h3>Remap a key</h3>
+            <label>Layer <select id="remap-layer"></select></label>
+            <label>Key <select id="remap-key"></select></label>
+            <label>New action
+              <select id="remap-type">
+                <option value="key">Keyboard key</option>
+                <option value="mouse">Mouse button</option>
+                <option value="media">Media</option>
+              </select>
+            </label>
+            <label><select id="remap-value"></select></label>
+            <button id="remap-apply" class="primary">Apply remap</button>
+          </div>
+        </div>
         <details class="card" open>
           <summary>Key map</summary>
-          <table id="ace60-keymap" class="mono"><thead><tr><th>Slot</th><th>Windows</th><th>Windows Fn</th><th>Mac</th><th>Mac Fn</th></tr></thead><tbody></tbody></table>
+          <table id="ace60-keymap" class="mono"><thead><tr><th>Key</th><th>Windows</th><th>Windows Fn</th><th>Mac</th><th>Mac Fn</th></tr></thead><tbody></tbody></table>
         </details>
         <details class="card">
-          <summary>Magnetic switch settings (raw)</summary>
-          <p class="hint">Four values per key. Which value is actuation and which is rapid trigger, and in what units, needs a capture where those settings are changed.</p>
-          <table id="ace60-switches" class="mono"><thead><tr><th>Keys</th><th>Values</th></tr></thead><tbody></tbody></table>
+          <summary>Magnetic switch settings</summary>
+          <p class="hint">Actuation in mm, the mode byte (1 normally; 2 is probably rapid trigger) and the raw values.</p>
+          <table id="ace60-switches" class="mono"><thead><tr><th>Keys</th><th>Actuation</th><th>Mode</th><th>Raw</th></tr></thead><tbody></tbody></table>
         </details>
         <details class="card">
           <summary>General settings block (raw)</summary>
