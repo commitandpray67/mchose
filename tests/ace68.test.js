@@ -15,3 +15,10 @@ test('parseHex accepts the usual spellings', () => {
   assert.deepEqual(Ace.parseHex('aa070f'), [0xaa, 0x07, 0x0f]);
   assert.deepEqual(Ace.parseHex(''), []);
 });
+
+test('the Ace 60 settings interface (Generic Desktop, usage 0) counts as configuration', () => {
+  const coll = (usagePage, usage) => ({ collections: [{ usagePage, usage }] });
+  assert.ok(Ace.isVendorCollection(coll(0x0001, 0x0000)));
+  assert.ok(Ace.isVendorCollection(coll(0xff00, 0x0001)));
+  assert.ok(!Ace.isVendorCollection(coll(0x000c, 0x0001)));
+});

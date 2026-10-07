@@ -35,9 +35,12 @@ export function modelFor(device) {
 
 export const isAce68 = (device) => modelFor(device) !== null;
 
-// Vendor-defined usage pages are >= 0xff00; that is where configuration lives.
+// Configuration lives on a vendor-defined usage page (>= 0xff00), or, on the
+// Sinowealth-based Ace 60 (41e4:2101), on Generic Desktop with an undefined
+// usage (0x0001 / 0x0000) carrying unnumbered report 0.
+const isConfigCollection = (c) => c.usagePage >= 0xff00 || (c.usagePage === 0x0001 && c.usage === 0x0000);
 export function isVendorCollection(device) {
-  return (device.collections || []).some((c) => c.usagePage >= 0xff00);
+  return (device.collections || []).some(isConfigCollection);
 }
 
 // One keyboard shows up as several HIDDevice objects, one per USB interface

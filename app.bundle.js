@@ -571,8 +571,9 @@
     return MODELS2.find((m) => m.ids.some(([v, p]) => v === device.vendorId && p === device.productId)) || null;
   }
   var isAce68 = (device) => modelFor(device) !== null;
+  var isConfigCollection = (c) => c.usagePage >= 65280 || c.usagePage === 1 && c.usage === 0;
   function isVendorCollection(device) {
-    return (device.collections || []).some((c) => c.usagePage >= 65280);
+    return (device.collections || []).some(isConfigCollection);
   }
   var RawSession = class {
     constructor(devices, { onReport = () => {
@@ -742,7 +743,15 @@
       log,
       mark(note) {
         push({ dir: "mark", note: String(note) });
-        return `marked: ${note}`;
+        return `marked: ${note}. ${this.status()}`;
+      },
+      // How many reports have been recorded. If this stays at 0 while you change
+      // settings in M HUB, it connected before the script was pasted and holds
+      // its own references to the original methods: reconnect the device.
+      status() {
+        const n = log.filter((e) => e.dir !== "mark" && e.dir !== "device").length;
+        const marks = log.filter((e) => e.dir === "mark").length;
+        return n ? `${n} reports recorded so far, ${marks} marks.` : "No reports recorded yet. If you already changed something, unplug and replug the keyboard, then connect it again in M HUB.";
       },
       download() {
         const body = JSON.stringify({ userAgent: navigator.userAgent, page: location.href, log }, null, 1);

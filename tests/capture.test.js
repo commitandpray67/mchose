@@ -21,6 +21,7 @@ test('the capture snippet records traffic and passes calls through', async () =>
   assert.match(new Function(`return ${captureSnippet()}`)(), /installed/);
   const d = new HIDDevice();
   await d.open();
+  assert.match(g.mchoseCapture.status(), /No reports/);
   g.mchoseCapture.mark('test');
   await d.sendReport(6, Uint8Array.of(0xaa, 0x01));
   const dv = await d.receiveFeatureReport(9);
@@ -30,4 +31,5 @@ test('the capture snippet records traffic and passes calls through', async () =>
   const dirs = g.mchoseCapture.log.map((e) => e.dir);
   assert.deepEqual(dirs, ['device', 'mark', 'out', 'feature-in', 'in']);
   assert.equal(g.mchoseCapture.log[2].data, 'aa 01');
+  assert.match(g.mchoseCapture.status(), /^3 reports recorded so far, 1 marks/);
 });

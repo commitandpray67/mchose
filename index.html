@@ -138,8 +138,12 @@
         <li>Click <button id="copy-capture" class="primary">Copy capture script</button> here.</li>
         <li>In the M HUB tab, press <kbd>F12</kbd> and open the <b>Console</b> tab. Paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) and press <kbd>Enter</kbd>.
           If Chrome warns about pasting, type <code>allow pasting</code>, press <kbd>Enter</kbd>, then paste again.
-          You should see <i>'mchoseCapture installed…'</i>. To check later, type <code>mchoseCapture</code> and press <kbd>Enter</kbd>: it should show an object, not "not defined".</li>
-        <li>Connect or select the keyboard in M HUB. Then, for each setting you want here, type a label in the Console and press <kbd>Enter</kbd>, then make that one change in M HUB. For example:
+          You should see <i>'mchoseCapture installed…'</i>.</li>
+        <li><b>Now unplug the keyboard, plug it back in, and connect it again in M HUB.</b> M HUB has to connect <i>after</i> the
+          script is in, or its traffic goes past it. Keep the M HUB tab open; reloading it removes the script.</li>
+        <li>Type <code>mchoseCapture.status()</code> and press <kbd>Enter</kbd>. It should say some reports were recorded
+          (M HUB reads the keyboard when it connects). If it says none, repeat the previous step.</li>
+        <li>For each setting you want here, type a label in the Console and press <kbd>Enter</kbd>, then make that one change in M HUB. For example:
           <pre class="log">mchoseCapture.mark('actuation all keys 2.0 -> 1.0 mm')
 mchoseCapture.mark('rapid trigger on')
 mchoseCapture.mark('rapid trigger sensitivity 0.3 -> 0.1')
@@ -147,6 +151,7 @@ mchoseCapture.mark('lighting effect static, red')
 mchoseCapture.mark('brightness max -> min')
 mchoseCapture.mark('remap CapsLock -> Ctrl')
 mchoseCapture.mark('polling rate 1000 -> 8000')</pre>
+          Each mark also shows the running count of recorded reports; it should go up after every change.
           Change one thing at a time, and use values you can recognise (going from one extreme to the other helps).</li>
         <li>Type <code>mchoseCapture.download()</code> and press <kbd>Enter</kbd>. A <code>mchose-capture-….json</code> file is saved to your Downloads. Send that file.</li>
       </ol>

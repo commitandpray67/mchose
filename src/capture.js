@@ -73,7 +73,17 @@ export function installCapture() {
     log,
     mark(note) {
       push({ dir: 'mark', note: String(note) });
-      return `marked: ${note}`;
+      return `marked: ${note}. ${this.status()}`;
+    },
+    // How many reports have been recorded. If this stays at 0 while you change
+    // settings in M HUB, it connected before the script was pasted and holds
+    // its own references to the original methods: reconnect the device.
+    status() {
+      const n = log.filter((e) => e.dir !== 'mark' && e.dir !== 'device').length;
+      const marks = log.filter((e) => e.dir === 'mark').length;
+      return n
+        ? `${n} reports recorded so far, ${marks} marks.`
+        : 'No reports recorded yet. If you already changed something, unplug and replug the keyboard, then connect it again in M HUB.';
     },
     download() {
       const body = JSON.stringify({ userAgent: navigator.userAgent, page: location.href, log }, null, 1);
