@@ -29,6 +29,10 @@ memory and read back to confirm it.
 The app recognises the Ace 68 (V2, Turbo, GT) and Ace 60 (Pro, 60X), and shows all of the keyboard's HID interfaces. It logs
 every report the keyboard sends, and you can send reports by hand.
 
+**Ace 60 (`41e4:2101`): reads settings.** Click *Read settings from keyboard* to see the firmware, active profile, the
+key map for all four layers, and the raw magnetic switch values. The protocol is documented in
+[`docs/ace60-protocol.md`](docs/ace60-protocol.md).
+
 **It can't change keyboard settings yet** (actuation, rapid trigger, lighting, key remapping). The Ace keyboards use a
 different protocol from the mouse, and nobody has published it. Rather than send made-up commands to your keyboard,
 the app includes a recorder for the official site:
@@ -82,7 +86,9 @@ app.bundle.js             built from src/ by `npm run build` (committed)
 src/app.js                UI
 src/a7v2/protocol.js      A7 V2 frame and config encoding/decoding (pure, unit tested)
 src/a7v2/driver.js        A7 V2 request sequencing, retries and read-back checks
-src/ace68/device.js       Ace 68 detection and raw HID session
+src/ace68/device.js       Ace keyboard detection and raw HID session
+src/ace60/                Ace 60 protocol (pure) and read-only driver
+captures/                 recordings of the official web driver, used as test fixtures
 src/hid.js                WebHID helpers (serial queue, report helpers)
 src/capture.js            the capture script for the official web driver (copied from the page)
 tests/                    node:test suites, including a simulated A7 V2

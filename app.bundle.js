@@ -665,6 +665,8 @@
     ["Left", 80],
     ["Down", 81],
     ["Up", 82],
+    ["Menu", 101],
+    ["Non-US \\", 100],
     ["F13", 104],
     ["F14", 105],
     ["F15", 106],
@@ -766,6 +768,169 @@
   }
   var captureSnippet = () => `(${installCapture.toString()})()`;
 
+  // src/ace60/protocol.js
+  var FRAME_LEN = 64;
+  var CHUNK = 56;
+  var REQ = 85;
+  var REPLY = 170;
+  var CMD2 = {
+    info: 3,
+    // firmware version and build date
+    profile: 4,
+    // active profile and profile list
+    settings: 5,
+    // 64-byte general settings block
+    keymap: 8,
+    // 4 layers x 128 keys x 3 bytes, layers 0x200 apart
+    macros: 12,
+    // 4 KiB macro area
+    notify: 169,
+    // sent by the keyboard on its own
+    switches: 160,
+    // 128 keys x 8 bytes of magnetic switch settings
+    hostRead: 241
+    // storage M HUB keeps on the keyboard for itself
+  };
+  var BLOCK_LEN = {
+    [CMD2.settings]: 64,
+    [CMD2.keymap]: 1920,
+    [CMD2.switches]: 1024
+  };
+  var checksum = (frame) => frame.slice(4, FRAME_LEN).reduce((s, b) => s + b, 0) & 255;
+  function encodeRequest2(cmd, offset = 0, len = CHUNK, data = []) {
+    if (len > CHUNK) throw new Error(`at most ${CHUNK} bytes per frame`);
+    const f = new Uint8Array(FRAME_LEN);
+    f[0] = REQ;
+    f[1] = cmd;
+    f[4] = len;
+    f[5] = offset & 255;
+    f[6] = offset >> 8;
+    f.set(data.slice(0, CHUNK), 8);
+    f[3] = checksum(f);
+    return f;
+  }
+  function decodeReply2(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+    if (b.length < FRAME_LEN || b[0] !== REPLY || checksum(b) !== b[3]) return null;
+    const len = Math.min(b[4], CHUNK);
+    return { cmd: b[1], offset: b[5] | b[6] << 8, len, data: b.slice(8, 8 + len) };
+  }
+  function chunks(total) {
+    const out = [];
+    for (let off = 0; off < total; off += CHUNK) out.push({ offset: off, len: Math.min(CHUNK, total - off) });
+    return out;
+  }
+  function parseInfo(d) {
+    const text = String.fromCharCode(...d.slice(2)).replace(/\0.*$/s, "");
+    return { version: `0x${(d[1] << 8 | d[0]).toString(16).padStart(4, "0")}`, build: text };
+  }
+  function parseProfile(d) {
+    return { active: d[0], count: d[1] };
+  }
+  var KEY_SLOTS = 128;
+  var LAYER_LEN = KEY_SLOTS * 3;
+  var LAYERS = [
+    { name: "Windows", offset: 0 },
+    { name: "Windows Fn", offset: 512 },
+    { name: "Mac", offset: 1024 },
+    { name: "Mac Fn", offset: 1536 }
+  ];
+  var ENTRY = { none: 0, key: 16, media: 48, fn: 240 };
+  var MODS = ["Ctrl", "Shift", "Alt", "Win", "Right Ctrl", "Right Shift", "Right Alt", "Right Win"];
+  function parseLayer(block, offset) {
+    const keys = [];
+    for (let i = 0; i < KEY_SLOTS; i++) {
+      const [type, arg, code] = block.slice(offset + i * 3, offset + i * 3 + 3);
+      keys.push({ slot: i, type, arg, code });
+    }
+    return keys;
+  }
+  var isEmpty = (k) => k.type === void 0 || k.type === 0 && k.arg === 0 && k.code === 0 || k.type === 240 && k.arg === 240 || k.type === 255;
+  function describeEntry(k, keyLabel2) {
+    if (isEmpty(k)) return "";
+    if (k.type === ENTRY.key) {
+      const mods = MODS.filter((_, i) => k.arg & 1 << i);
+      if (!k.code) return mods.join(" + ");
+      return [...mods, keyLabel2(k.code)].join(" + ");
+    }
+    if (k.type === ENTRY.media) return MEDIA[k.arg] || `Media 0x${k.arg.toString(16)}`;
+    if (k.type === ENTRY.fn) return k.arg === 255 ? "Fn" : `Function 0x${k.arg.toString(16)}`;
+    return `0x${[k.type, k.arg, k.code].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+  }
+  var MEDIA = {
+    181: "Next track",
+    182: "Previous track",
+    183: "Stop",
+    205: "Play / pause",
+    226: "Mute",
+    233: "Volume up",
+    234: "Volume down"
+  };
+  function parseSwitches(block) {
+    const out = [];
+    for (let i = 0; i < KEY_SLOTS; i++) {
+      const o = i * 8;
+      const u = (j) => block[o + j] | block[o + j + 1] << 8;
+      out.push([u(0), u(2), u(4), u(6)]);
+    }
+    return out;
+  }
+
+  // src/ace60/driver.js
+  var isAce60Config = (device) => (device.collections || []).some((c) => c.usagePage === 1 && c.usage === 0 && (c.outputReports || []).some((r) => r.reportId === 0));
+  var Ace60 = class {
+    constructor(device, { log = () => {
+    }, queue = new SerialQueue(5) } = {}) {
+      this.device = device;
+      this.log = log;
+      this.queue = queue;
+    }
+    // One frame out, the matching reply back. Replies are matched on command
+    // and offset (the keyboard also sends unsolicited frames); not on length,
+    // since the info reply is shorter than the 56 bytes asked for.
+    request(cmd, offset = 0, len = CHUNK, { timeout = 800, tries = 3 } = {}) {
+      return this.queue.run(async () => {
+        const frame = encodeRequest2(cmd, offset, len);
+        for (let attempt = 0; attempt < tries; attempt++) {
+          const reply = new Promise((resolve) => {
+            const done = (value) => {
+              clearTimeout(timer);
+              this.device.removeEventListener("inputreport", onReport);
+              resolve(value);
+            };
+            const onReport = (e) => {
+              if (e.reportId !== 0) return;
+              const r2 = decodeReply2(dataViewBytes(e.data));
+              if (r2 && r2.cmd === cmd && r2.offset === offset) done(r2);
+            };
+            const timer = setTimeout(() => done(null), timeout);
+            this.device.addEventListener("inputreport", onReport);
+          });
+          this.log("tx", 0, frame);
+          await this.device.sendReport(0, frame);
+          const r = await reply;
+          if (r) return r.data;
+        }
+        throw new Error(`the keyboard did not answer command 0x${cmd.toString(16)} at offset ${offset}`);
+      });
+    }
+    // Reads `total` bytes from `base` in the same chunks M HUB uses.
+    async readBlock(cmd, total, base = 0, into = new Uint8Array(base + total)) {
+      for (const { offset, len } of chunks(total)) into.set(await this.request(cmd, base + offset, len), base + offset);
+      return into;
+    }
+    async load() {
+      const info = parseInfo(await this.request(CMD2.info));
+      const profile = parseProfile(await this.request(CMD2.profile));
+      const settings = await this.readBlock(CMD2.settings, BLOCK_LEN[CMD2.settings]);
+      const keymap = new Uint8Array(BLOCK_LEN[CMD2.keymap]);
+      for (const l of LAYERS) await this.readBlock(CMD2.keymap, LAYER_LEN, l.offset, keymap);
+      const switches = parseSwitches(await this.readBlock(CMD2.switches, BLOCK_LEN[CMD2.switches]));
+      const layers = LAYERS.map((l) => ({ ...l, keys: parseLayer(keymap, l.offset) }));
+      return { info, profile, settings, layers, switches };
+    }
+  };
+
   // src/app.js
   var $ = (sel) => document.querySelector(sel);
   var el = (tag, props = {}, ...children) => {
@@ -820,6 +985,7 @@
   };
   var mouse = null;
   var keyboard = null;
+  var ace60 = null;
   if (!hidAvailable()) {
     $("#no-hid").hidden = false;
     $("#connect-mouse").disabled = true;
@@ -863,6 +1029,9 @@
       return;
     }
     renderKeyboard(keyboard.devices);
+    const cfg = keyboard.devices.find(isAce60Config);
+    ace60 = cfg ? new Ace60(cfg, { log: logEntry }) : null;
+    $("#ace60").hidden = !ace60;
     $("#keyboard").hidden = false;
   }
   async function siblings(devices) {
@@ -883,6 +1052,7 @@
   $("#keyboard-disconnect").onclick = async () => {
     await keyboard?.close();
     keyboard = null;
+    ace60 = null;
     $("#keyboard").hidden = true;
   };
   navigator.hid?.addEventListener("disconnect", (e) => {
@@ -893,6 +1063,7 @@
     }
     if (keyboard && keyboard.owns(e.device)) {
       keyboard = null;
+      ace60 = null;
       $("#keyboard").hidden = true;
       toast("Keyboard disconnected");
     }
@@ -1138,6 +1309,45 @@
   $("#raw-output").onclick = () => rawGuard(() => keyboard.sendOutput(...rawArgs()));
   $("#raw-feature").onclick = () => rawGuard(() => keyboard.sendFeature(...rawArgs()));
   $("#raw-read").onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0]));
+  $("#ace60-read").onclick = async () => {
+    if (!ace60) return;
+    const btn = $("#ace60-read");
+    btn.disabled = true;
+    try {
+      const r = await ace60.load();
+      renderAce60(r);
+      toast("Read the keyboard settings", "ok");
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  function renderAce60({ info, profile, settings, layers, switches }) {
+    const facts = [
+      ["Firmware", info.version],
+      ["Built", info.build],
+      ["Profile", `${profile.active + 1} of ${profile.count}`]
+    ];
+    $("#ace60-info").replaceChildren(...facts.map(([k, v]) => el("div", {}, el("dt", { textContent: k }), el("dd", { textContent: v }))));
+    const rows = [];
+    for (let slot = 0; slot < KEY_SLOTS; slot++) {
+      const cells = layers.map((l) => describeEntry(l.keys[slot], keyLabel));
+      if (cells.every((c) => !c)) continue;
+      rows.push(el("tr", {}, el("td", { textContent: slot }), ...cells.map((c) => el("td", { textContent: c || "\u2014" }))));
+    }
+    $("#ace60-keymap tbody").replaceChildren(...rows);
+    const groups = /* @__PURE__ */ new Map();
+    switches.forEach((v, slot) => {
+      if (layers[0].keys[slot] && isEmpty(layers[0].keys[slot])) return;
+      const key = v.join(" / ");
+      groups.set(key, [...groups.get(key) || [], slot]);
+    });
+    $("#ace60-switches tbody").replaceChildren(
+      ...[...groups].map(([values, slots]) => el("tr", {}, el("td", { textContent: slots.length === 1 ? `slot ${slots[0]}` : `${slots.length} keys` }), el("td", { textContent: values })))
+    );
+    $("#ace60-settings").textContent = hexBytes(settings);
+  }
   $("#capture-text").value = captureSnippet();
   $("#copy-capture").onclick = async () => {
     try {

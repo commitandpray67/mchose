@@ -4,6 +4,8 @@ import * as Ace from './ace68/device.js';
 import { KEYS, keyLabel } from './keys.js';
 import { collectionsSummary, hidAvailable } from './hid.js';
 import { captureSnippet } from './capture.js';
+import * as K from './ace60/protocol.js';
+import { Ace60, isAce60Config } from './ace60/driver.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, props = {}, ...children) => {
@@ -66,6 +68,7 @@ $('#log-save').onclick = () => {
 
 let mouse = null;
 let keyboard = null;
+let ace60 = null;
 
 if (!hidAvailable()) {
   $('#no-hid').hidden = false;
@@ -113,6 +116,9 @@ async function connectKeyboard(devices) {
     return;
   }
   renderKeyboard(keyboard.devices);
+  const cfg = keyboard.devices.find(isAce60Config);
+  ace60 = cfg ? new Ace60(cfg, { log: logEntry }) : null;
+  $('#ace60').hidden = !ace60;
   $('#keyboard').hidden = false;
 }
 
@@ -141,6 +147,7 @@ $('#connect-any').onclick = () => pickKeyboard([]);
 $('#keyboard-disconnect').onclick = async () => {
   await keyboard?.close();
   keyboard = null;
+  ace60 = null;
   $('#keyboard').hidden = true;
 };
 
@@ -152,6 +159,7 @@ navigator.hid?.addEventListener('disconnect', (e) => {
   }
   if (keyboard && keyboard.owns(e.device)) {
     keyboard = null;
+    ace60 = null;
     $('#keyboard').hidden = true;
     toast('Keyboard disconnected');
   }
@@ -412,6 +420,51 @@ const rawGuard = async (job) => {
 $('#raw-output').onclick = () => rawGuard(() => keyboard.sendOutput(...rawArgs()));
 $('#raw-feature').onclick = () => rawGuard(() => keyboard.sendFeature(...rawArgs()));
 $('#raw-read').onclick = () => rawGuard(() => keyboard.readFeature(rawArgs()[0]));
+
+/* ---------- Ace 60 (read-only) ---------- */
+
+$('#ace60-read').onclick = async () => {
+  if (!ace60) return;
+  const btn = $('#ace60-read');
+  btn.disabled = true;
+  try {
+    const r = await ace60.load();
+    renderAce60(r);
+    toast('Read the keyboard settings', 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+function renderAce60({ info, profile, settings, layers, switches }) {
+  const facts = [
+    ['Firmware', info.version],
+    ['Built', info.build],
+    ['Profile', `${profile.active + 1} of ${profile.count}`],
+  ];
+  $('#ace60-info').replaceChildren(...facts.map(([k, v]) => el('div', {}, el('dt', { textContent: k }), el('dd', { textContent: v }))));
+
+  const rows = [];
+  for (let slot = 0; slot < K.KEY_SLOTS; slot++) {
+    const cells = layers.map((l) => K.describeEntry(l.keys[slot], keyLabel));
+    if (cells.every((c) => !c)) continue;
+    rows.push(el('tr', {}, el('td', { textContent: slot }), ...cells.map((c) => el('td', { textContent: c || '—' }))));
+  }
+  $('#ace60-keymap tbody').replaceChildren(...rows);
+
+  const groups = new Map();
+  switches.forEach((v, slot) => {
+    if (layers[0].keys[slot] && K.isEmpty(layers[0].keys[slot])) return;
+    const key = v.join(' / ');
+    groups.set(key, [...(groups.get(key) || []), slot]);
+  });
+  $('#ace60-switches tbody').replaceChildren(
+    ...[...groups].map(([values, slots]) => el('tr', {}, el('td', { textContent: slots.length === 1 ? `slot ${slots[0]}` : `${slots.length} keys` }), el('td', { textContent: values }))),
+  );
+  $('#ace60-settings').textContent = P.hexBytes(settings);
+}
 
 /* ---------- capture script ---------- */
 

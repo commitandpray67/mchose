@@ -95,13 +95,36 @@
         <button id="keyboard-disconnect">Disconnect</button>
       </div>
       <div class="notice">
-        <strong>Keyboard settings aren't supported yet.</strong> MCHOSE hasn't published how its Ace keyboards are configured, and nobody has
-        documented it yet. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
+        <strong>Keyboard settings can be read but not changed yet.</strong> For the Ace 60 (41e4:2101) the app reads the key map,
+        switch settings and firmware, using the protocol recorded from the official site. Changing settings needs a recording of the
+        official site <em>changing</em> them. Sending made-up commands to a keyboard can leave it in a bad state, so this page doesn't guess.
         It identifies the keyboard, shows its HID interfaces and every report it sends, and lets you record what the
         official site does (see <a href="#capture">Record the keyboard protocol</a>). One recording gives enough to add
         actuation, rapid trigger, lighting and remapping here.
       </div>
       <dl id="keyboard-info" class="info"></dl>
+
+      <div id="ace60" hidden>
+        <div class="row">
+          <button id="ace60-read" class="primary">Read settings from keyboard</button>
+          <span class="hint">Read-only. It sends the same read requests as the official site.</span>
+        </div>
+        <dl id="ace60-info" class="info"></dl>
+        <details class="card" open>
+          <summary>Key map</summary>
+          <table id="ace60-keymap" class="mono"><thead><tr><th>Slot</th><th>Windows</th><th>Windows Fn</th><th>Mac</th><th>Mac Fn</th></tr></thead><tbody></tbody></table>
+        </details>
+        <details class="card">
+          <summary>Magnetic switch settings (raw)</summary>
+          <p class="hint">Four values per key. Which value is actuation and which is rapid trigger, and in what units, needs a capture where those settings are changed.</p>
+          <table id="ace60-switches" class="mono"><thead><tr><th>Keys</th><th>Values</th></tr></thead><tbody></tbody></table>
+        </details>
+        <details class="card">
+          <summary>General settings block (raw)</summary>
+          <pre id="ace60-settings" class="log"></pre>
+        </details>
+      </div>
+
       <h3>HID collections</h3>
       <table id="collections" class="mono"><thead><tr><th>Usage page</th><th>Usage</th><th>Input</th><th>Output</th><th>Feature</th></tr></thead><tbody></tbody></table>
 
