@@ -682,8 +682,7 @@
   // src/capture.js
   function installCapture() {
     if (window.mchoseCapture) {
-      console.warn("mchoseCapture is already installed");
-      return;
+      return "mchoseCapture is already installed";
     }
     const log = [];
     const t0 = performance.now();
@@ -743,7 +742,7 @@
       log,
       mark(note) {
         push({ dir: "mark", note: String(note) });
-        console.log(`marked: ${note}`);
+        return `marked: ${note}`;
       },
       download() {
         const body = JSON.stringify({ userAgent: navigator.userAgent, page: location.href, log }, null, 1);
@@ -751,12 +750,12 @@
         a.href = URL.createObjectURL(new Blob([body], { type: "application/json" }));
         a.download = `mchose-capture-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.json`;
         a.click();
-        console.log(`saved ${log.length} entries`);
+        return `saved ${log.length} entries`;
       }
     };
-    console.log('mchoseCapture installed. Now use M HUB as usual; run mchoseCapture.mark("...") before each change.');
+    return 'mchoseCapture installed. Now use M HUB as usual; run mchoseCapture.mark("...") before each change.';
   }
-  var captureSnippet = () => `(${installCapture.toString()})();`;
+  var captureSnippet = () => `(${installCapture.toString()})()`;
 
   // src/app.js
   var $ = (sel) => document.querySelector(sel);

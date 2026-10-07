@@ -18,7 +18,7 @@ test('the capture snippet records traffic and passes calls through', async () =>
   g.HIDDevice = HIDDevice;
   g.window = g;
   Object.defineProperty(g, 'navigator', { value: { hid: { getDevices: async () => [] }, userAgent: 'test' }, configurable: true });
-  new Function(captureSnippet())();
+  assert.match(new Function(`return ${captureSnippet()}`)(), /installed/);
   const d = new HIDDevice();
   await d.open();
   g.mchoseCapture.mark('test');
